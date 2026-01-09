@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mgatk2"
+version = "1.0.0"
+description = "Mitochondrial genome analysis toolkit for single-cell data"
+readme = "README.md"
+authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "pysam>=0.19",
+    "numpy>=1.20",
+    "tqdm>=4.60",
+    "psutil>=5.8",
+    "h5py>=3.0",
+    "joblib>=1.0",
+    "matplotlib>=3.3",
+]
+
+[project.urls]
+Repository = "https://github.com/ollieeknight/mgatk2"
+
+[project.scripts]
+mgatk2 = "cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+skip-string-normalization = false
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+known_first_party = ["mgatk2"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "N", "PIE", "T20", "RET"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403", "F405"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pysam.*",
+    "matplotlib.*",
+    "h5py.*",
+    "tqdm.*",
+    "psutil.*",
+]
+ignore_missing_imports = true

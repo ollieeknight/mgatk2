@@ -1,0 +1,67 @@
+{% set name = "mgatk2" %}
+{% set version = "1.0.0" %}
+{% set sha256 = "4d174f8f4e83756e41873e2ceb45e3e69eb159a2db048a5b8a037f089df9b823" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/ollieeknight/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: {{ sha256 }}
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  noarch: python
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=61.0
+    - wheel
+  run:
+    - python >=3.10
+    - click >=8.0.0
+    - pysam >=0.19.0
+    - numpy >=1.20.0
+    - tqdm >=4.60.0
+    - psutil >=5.8.0
+    - h5py >=3.0.0
+    - joblib >=1.0.0
+    - matplotlib-base >=3.3.0
+
+test:
+  imports:
+    - mgatk
+    - mgatk.cli
+    - mgatk.core
+    - mgatk.io
+    - mgatk.processing
+    - mgatk.utils
+    - mgatk.analysis
+  commands:
+    - mgatk2 --help
+    - mgatk2 run --help
+    - mgatk2 tenx --help
+    - mgatk2 test --help
+    - mgatk2 call --help
+
+about:
+  home: https://github.com/ollieeknight/mgatk2
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: Mitochondrial genome analysis toolkit v2 with enhanced single-cell support
+  description: |
+    mgatk2 is a reimplementation of the original mgatk toolkit for analyzing
+    mitochondrial DNA from single-cell sequencing data. It features pure Python
+    implementation, memory-efficient design, optimized parallel processing,
+    HDF5 output format, and comprehensive QC reporting.
+  doc_url: https://github.com/ollieeknight/mgatk2
+  dev_url: https://github.com/ollieeknight/mgatk2
+
+extra:
+  recipe-maintainers:
+    - ollieeknight

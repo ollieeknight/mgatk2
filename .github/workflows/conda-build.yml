@@ -1,0 +1,40 @@
+name: Build Conda Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        python-version: '3.11'
+        channels: conda-forge,defaults
+    
+    - name: Build package
+      shell: bash -el {0}
+      run: |
+        conda install conda-build -y
+        conda-build conda-recipe --output-folder dist
+    
+    - name: Test installation
+      shell: bash -el {0}
+      run: |
+        conda install dist/*/mgatk2-*.tar.bz2 -y
+        mgatk2 --help
+    
+    - name: Upload to Anaconda
+      if: startsWith(github.ref, 'refs/tags/v')
+      shell: bash -el {0}
+      env:
+        ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
+      run: |
+        conda install anaconda-client -y
+        anaconda -t $ANACONDA_TOKEN upload dist/*/mgatk2-*.tar.bz2
