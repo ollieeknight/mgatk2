@@ -37,7 +37,7 @@ jobs:
     - name: Lint
       run: |
         pip install ruff
-        ruff check mgatk/
+        ruff check src/
 
   conda-build:
     runs-on: ubuntu-latest
