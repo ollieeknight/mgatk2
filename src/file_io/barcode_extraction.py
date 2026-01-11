@@ -16,7 +16,7 @@ def extract_barcodes_from_bam(
     logger.info("Extracting barcodes from BAM file...")
     logger.info("  Looking for tag '%s' on chromosome '%s'", barcode_tag, mito_chr)
 
-    barcode_counts = {}
+    barcode_counts: dict[str, int] = {}
 
     try:
         bam = pysam.AlignmentFile(bam_path, "rb")
@@ -28,7 +28,7 @@ def extract_barcodes_from_bam(
 
             # Get barcode from tag
             if read.has_tag(barcode_tag):
-                barcode = read.get_tag(barcode_tag)
+                barcode = str(read.get_tag(barcode_tag))
                 barcode_counts[barcode] = barcode_counts.get(barcode, 0) + 1
 
         bam.close()

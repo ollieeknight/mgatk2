@@ -71,8 +71,8 @@ class BAMReader:
         is_bulk_mode = self.barcodes == {"bulk"}
 
         # Track seen fragments per barcode for deduplication
-        seen_fragments_with_length = defaultdict(set)
-        seen_fragments_position_only = defaultdict(set)
+        seen_fragments_with_length: dict[str, set] = defaultdict(set)
+        seen_fragments_position_only: dict[str, set] = defaultdict(set)
 
         # Statistics tracking
         total_reads = 0

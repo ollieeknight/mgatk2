@@ -20,7 +20,7 @@ class QCCalculator:
 
     def calculate_position_stats(self, cell_results: list[dict]) -> dict[int, dict]:
         # Collect depths for each position across all cells
-        position_data = defaultdict(lambda: {"depths": [], "n_cells": 0})
+        position_data: dict[int, dict] = defaultdict(lambda: {"depths": [], "n_cells": 0})
 
         # Collect data for each position
         for result in cell_results:

@@ -83,6 +83,46 @@ read_mgatk_hdf5 <- function(output_dir) {
   )
 }
 
+subset_mgatk_barcodes <- function(mgatk_data, barcodes) {
+  
+  keep_idx <- which(mgatk_data$barcodes %in% barcodes)
+  
+  if (length(keep_idx) == 0) {
+    stop("No matching barcodes found")
+  }
+  
+  message("  Found ", length(keep_idx), " matching barcodes (", 
+          round(100 * length(keep_idx) / length(mgatk_data$barcodes), 1), "%)")
+  
+  counts_subset <- lapply(mgatk_data$counts, function(mat) {
+    if (!is.null(mat)) {
+      mat[keep_idx, , drop = FALSE]
+    } else {
+      NULL
+    }
+  })
+  
+  barcode_metadata_subset <- NULL
+  if (!is.null(mgatk_data$barcode_metadata)) {
+    barcode_metadata_subset <- mgatk_data$barcode_metadata[keep_idx, ]
+  }
+  
+  result <- list(
+    counts = counts_subset,
+    mean_depth = mgatk_data$mean_depth[keep_idx],
+    median_depth = mgatk_data$median_depth[keep_idx],
+    max_depth = mgatk_data$max_depth[keep_idx],
+    genome_coverage = mgatk_data$genome_coverage[keep_idx],
+    total_bases = mgatk_data$total_bases[keep_idx],
+    refallele = mgatk_data$refallele,
+    positions = mgatk_data$positions,
+    barcodes = mgatk_data$barcodes[keep_idx],
+    barcode_metadata = barcode_metadata_subset
+  )
+  
+  return(result)
+}
+
 calculate_cell_coverage_stats <- function(mgatk_data) {
   coverage_matrix <- mgatk_data$counts$coverage
   
@@ -380,270 +420,4 @@ calculate_allele_freq <- function(mgatk_data, variants, min_coverage = 1) {
   }
   
   return(allele_freq)
-}
-
-subset_mgatk_barcodes <- function(mgatk_data, barcodes) {
-  
-  keep_idx <- which(mgatk_data$barcodes %in% barcodes)
-  
-  if (length(keep_idx) == 0) {
-    stop("No matching barcodes found")
-  }
-  
-  message("  Found ", length(keep_idx), " matching barcodes (", 
-          round(100 * length(keep_idx) / length(mgatk_data$barcodes), 1), "%)")
-  
-  counts_subset <- lapply(mgatk_data$counts, function(mat) {
-    if (!is.null(mat)) {
-      mat[keep_idx, , drop = FALSE]
-    } else {
-      NULL
-    }
-  })
-  
-  barcode_metadata_subset <- NULL
-  if (!is.null(mgatk_data$barcode_metadata)) {
-    barcode_metadata_subset <- mgatk_data$barcode_metadata[keep_idx, ]
-  }
-  
-  result <- list(
-    counts = counts_subset,
-    mean_depth = mgatk_data$mean_depth[keep_idx],
-    median_depth = mgatk_data$median_depth[keep_idx],
-    max_depth = mgatk_data$max_depth[keep_idx],
-    genome_coverage = mgatk_data$genome_coverage[keep_idx],
-    total_bases = mgatk_data$total_bases[keep_idx],
-    refallele = mgatk_data$refallele,
-    positions = mgatk_data$positions,
-    barcodes = mgatk_data$barcodes[keep_idx],
-    barcode_metadata = barcode_metadata_subset
-  )
-  
-  return(result)
-}
-
-call_somatic_variants <- function(mgatk_data,
-                                  seurat_object,
-                                  baseline_cells = NULL,
-                                  baseline_column = NULL,
-                                  baseline_values = NULL,
-                                  test_cells = NULL,
-                                  test_column = NULL, 
-                                  test_values = NULL,
-                                  min_coverage = 10,
-                                  min_alt_reads = 3,
-                                  min_strand_reads = 2,
-                                  min_cells_with_mutation = 3,
-                                  max_baseline_af = 0.01,
-                                  min_somatic_af = 0.05,
-                                  strand_bias_max = 0.9,
-                                  fisher_pval_cutoff = 0.01,
-                                  p_adjust_method = "fdr") {
-  
-  if (is.null(baseline_cells) && !is.null(baseline_column)) {
-    baseline_cells <- seurat_object@meta.data %>%
-      tibble::rownames_to_column("barcode") %>%
-      filter(get(baseline_column) %in% baseline_values) %>%
-      pull(barcode)
-  }
-  
-  if (is.null(test_cells) && !is.null(test_column)) {
-    test_cells <- seurat_object@meta.data %>%
-      tibble::rownames_to_column("barcode") %>%
-      filter(get(test_column) %in% test_values) %>%
-      pull(barcode)
-  }
-  
-  if (is.null(baseline_cells) || is.null(test_cells)) {
-    stop("Must specify baseline_cells and test_cells or provide column filters")
-  }
-  
-  # Match barcodes with mgatk data
-  baseline_barcodes <- intersect(baseline_cells, mgatk_data$barcodes)
-  test_barcodes <- intersect(test_cells, mgatk_data$barcodes)
-  
-  
-  if (length(baseline_barcodes) == 0 || length(test_barcodes) == 0) {
-    stop("No matching cells found in mgatk data")
-  }
-  
-  # Get cell indices
-  baseline_idx <- which(mgatk_data$barcodes %in% baseline_barcodes)
-  test_idx <- which(mgatk_data$barcodes %in% test_barcodes)
-  
-  positions <- mgatk_data$positions
-  refallele <- mgatk_data$refallele
-  bases <- c("A", "C", "G", "T")
-  
-  somatic_variants <- list()
-  
-  pb <- txtProgressBar(min = 0, max = length(bases), style = 3)
-  
-  for (base_idx in seq_along(bases)) {
-    base <- bases[base_idx]
-    
-    fwd <- mgatk_data$counts[[paste0(base, "_fwd")]]
-    rev <- mgatk_data$counts[[paste0(base, "_rev")]]
-    cov <- mgatk_data$counts$coverage
-    
-    # Only test non-reference positions
-    is_ref <- refallele == base
-    alt_positions <- which(!is_ref)
-    
-    for (pos_idx in alt_positions) {
-      pos <- positions[pos_idx]
-      ref_base <- refallele[pos_idx]
-      
-      # Extract counts for this position
-      fwd_counts <- fwd[, pos_idx]
-      rev_counts <- rev[, pos_idx]
-      cov_counts <- cov[, pos_idx]
-      total_alt <- fwd_counts + rev_counts
-      
-      # Calculate allele frequencies
-      af <- ifelse(cov_counts >= min_coverage, total_alt / cov_counts, NA)
-      
-      # Strand bias calculation
-      strand_bias <- ifelse(total_alt > 0, 
-                            pmax(fwd_counts, rev_counts) / total_alt, 0)
-      
-      # Quality filters per cell
-      high_quality <- (
-        cov_counts >= min_coverage &
-          total_alt >= min_alt_reads &
-          fwd_counts >= min_strand_reads &
-          rev_counts >= min_strand_reads &
-          strand_bias <= strand_bias_max &
-          !is.na(af)
-      )
-      
-      # Baseline statistics
-      baseline_af <- af[baseline_idx]
-      baseline_hq <- high_quality[baseline_idx]
-      baseline_coverage <- cov_counts[baseline_idx]
-      baseline_alt <- total_alt[baseline_idx]
-      
-      # Calculate baseline allele frequency (key for somatic calling)
-      baseline_cells_covered <- sum(baseline_coverage >= min_coverage)
-      if (baseline_cells_covered < 3) next
-      
-      baseline_mean_af <- mean(baseline_af[!is.na(baseline_af)])
-      baseline_bulk_af <- sum(baseline_alt) / sum(baseline_coverage)
-      baseline_cells_with_variant <- sum(baseline_hq & baseline_af > 0)
-      
-      # SOMATIC FILTER 1: Must be rare/absent in baseline
-      if (baseline_bulk_af > max_baseline_af) next
-      
-      # Test population statistics  
-      test_af <- af[test_idx]
-      test_hq <- high_quality[test_idx]
-      test_coverage <- cov_counts[test_idx]
-      test_alt <- total_alt[test_idx]
-      
-      test_cells_covered <- sum(test_coverage >= min_coverage)
-      if (test_cells_covered < min_cells_with_mutation) next
-      
-      test_mean_af <- mean(test_af[!is.na(test_af)])
-      test_bulk_af <- sum(test_alt) / sum(test_coverage)
-      test_cells_with_variant <- sum(test_hq & test_af > 0)
-      
-      # SOMATIC FILTER 2: Must be present in test population
-      if (test_bulk_af < min_somatic_af) next
-      if (test_cells_with_variant < min_cells_with_mutation) next
-      
-      # Statistical test: baseline vs test
-      baseline_valid <- baseline_af[!is.na(baseline_af)]
-      test_valid <- test_af[!is.na(test_af)]
-      
-      # Fisher's exact test on count data (more appropriate)
-      fisher_pval <- NA
-      if (length(baseline_valid) >= 3 && length(test_valid) >= 3) {
-        cont_table <- matrix(c(
-          sum(baseline_alt), sum(baseline_coverage) - sum(baseline_alt),
-          sum(test_alt), sum(test_coverage) - sum(test_alt)
-        ), nrow = 2, byrow = TRUE)
-        
-        tryCatch({
-          fisher_result <- fisher.test(cont_table)
-          fisher_pval <- fisher_result$p.value
-        }, error = function(e) fisher_pval <<- NA)
-      }
-      
-      if (is.na(fisher_pval) || fisher_pval > fisher_pval_cutoff) next
-      
-      # Calculate confidence intervals for effect size
-      af_difference <- test_bulk_af - baseline_bulk_af
-      odds_ratio <- (test_bulk_af / (1 - test_bulk_af)) / 
-        (baseline_bulk_af / (1 - baseline_bulk_af) + 1e-10)
-      
-      # Allele frequency in cells with high-quality calls
-      hq_baseline_af <- mean(baseline_af[baseline_hq], na.rm = TRUE)
-      hq_test_af <- mean(test_af[test_hq], na.rm = TRUE)
-      
-      # Overall strand correlation
-      all_fwd <- c(fwd_counts[baseline_idx], fwd_counts[test_idx])
-      all_rev <- c(rev_counts[baseline_idx], rev_counts[test_idx])
-      has_variant_idx <- (all_fwd + all_rev) > 0
-      
-      strand_correlation <- if (sum(has_variant_idx) > 1) {
-        cor(all_fwd[has_variant_idx], all_rev[has_variant_idx], 
-            use = "complete.obs")
-      } else 0
-      if (is.na(strand_correlation)) strand_correlation <- 0
-      
-      somatic_variants[[length(somatic_variants) + 1]] <- tibble(
-        chromosome = "chrM",  # Mitochondrial
-        position = pos,
-        ref_allele = ref_base,
-        alt_allele = base,
-        variant_id = paste0("chrM:", pos, ":", ref_base, ">", base),
-        
-        # Baseline (normal) population
-        baseline_cells = length(baseline_barcodes),
-        baseline_coverage = sum(baseline_coverage),
-        baseline_alt_reads = sum(baseline_alt),
-        baseline_af = baseline_bulk_af,
-        baseline_mean_af = baseline_mean_af,
-        baseline_cells_with_variant = baseline_cells_with_variant,
-        
-        # Test (tumor/case) population  
-        test_cells = length(test_barcodes),
-        test_coverage = sum(test_coverage),
-        test_alt_reads = sum(test_alt),
-        test_af = test_bulk_af,
-        test_mean_af = test_mean_af,
-        test_cells_with_variant = test_cells_with_variant,
-        
-        # Somatic calling metrics
-        af_difference = af_difference,
-        fold_change = test_bulk_af / (baseline_bulk_af + 1e-10),
-        odds_ratio = odds_ratio,
-        fisher_pval = fisher_pval,
-        
-        # Quality metrics
-        strand_correlation = strand_correlation,
-        hq_baseline_af = hq_baseline_af,
-        hq_test_af = hq_test_af
-      )
-    }
-    
-    setTxtProgressBar(pb, base_idx)
-  }
-  close(pb)
-  
-  if (length(somatic_variants) == 0) {
-    message("No somatic variants detected")
-    return(tibble())
-  }
-  
-  # Combine results and apply multiple testing correction
-  results <- bind_rows(somatic_variants) %>%
-    mutate(
-      fisher_pval_adj = p.adjust(fisher_pval, method = p_adjust_method),
-      is_somatic = fisher_pval_adj < 0.05,
-      somatic_score = -log10(fisher_pval_adj) * af_difference
-    ) %>%
-    arrange(fisher_pval)
-  
-  return(results)
 }

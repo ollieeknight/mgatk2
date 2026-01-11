@@ -14,7 +14,7 @@ def write_cell_stats(cell_stats: list[dict], output_path: Path):
         return
 
     # Get all unique keys from all cells
-    all_keys = set()
+    all_keys: set[str] = set()
     for stats in cell_stats:
         all_keys.update(stats.keys())
 
@@ -101,20 +101,18 @@ def write_tsv_file(data: list[dict], output_path: Path, delimiter="\t"):
         return
 
     # Get all unique keys
-    all_keys = set()
+    all_keys: set[str] = set()
     for row in data:
         all_keys.update(row.keys())
     sorted_keys = sorted(all_keys)
 
     # Handle compression if file ends with .gz
     if output_path.suffix == ".gz":
-        open_func = gzip.open
-        mode = "wt"
+        f = gzip.open(output_path, "wt")
     else:
-        open_func = open
-        mode = "w"
+        f = open(output_path, "w")
 
-    with open_func(output_path, mode) as f:
+    with f:
         # Write header
         f.write(delimiter.join(sorted_keys) + "\n")
 

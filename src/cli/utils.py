@@ -34,13 +34,14 @@ def parse_reads_number(reads_str: str) -> int:
     return int(reads_str)
 
 
-def auto_detect_10x_structure(bam_path: str, barcode_file: str = None) -> tuple[str, str]:
+def auto_detect_10x_structure(bam_path: str, barcode_file: str | None = None) -> tuple[str, str | None]:
     """Auto-detect 10x Genomics output structure"""
     path = Path(bam_path)
 
     # Directory input - find BAM file
     if path.is_dir():
         # Check for outs directory
+        bam_file: Path | None = None
         if path.name == "outs" or "outs" in str(path):
             bam_file = path / "possorted_bam.bam"
             if not bam_file.exists():
@@ -67,7 +68,7 @@ def auto_detect_10x_structure(bam_path: str, barcode_file: str = None) -> tuple[
     return str(Path(bam_path).resolve()), barcode_file
 
 
-def _find_barcode_file(directory: Path) -> str:
+def _find_barcode_file(directory: Path) -> str | None:
     """Find barcode file in 10x directory."""
     # Try singlecell.csv first
     singlecell = directory / "singlecell.csv"
@@ -433,13 +434,18 @@ def _log_configuration(
 
         with open(barcode_file) as f:
             reader = csv.DictReader(f)
+            headers = reader.fieldnames
+
+            if headers is None:
+                logger.warning("CSV file has no headers")
+                return
 
             # Determine which column to use
-            if "is__cell_barcode" in reader.fieldnames:
+            if "is__cell_barcode" in headers:
                 column_found = "is__cell_barcode"
-            elif "is_cell_barcode" in reader.fieldnames:
+            elif "is_cell_barcode" in headers:
                 column_found = "is_cell_barcode"
-            elif "is_cell" in reader.fieldnames:
+            elif "is_cell" in headers:
                 column_found = "is_cell"
 
             for row in reader:
@@ -454,7 +460,8 @@ def _log_configuration(
             n_barcodes = sum(1 for line in f if line.strip())
     else:
         # For bulk calling
-        n_barcodes = "bulk (all reads)"
+        logger.info("  Barcodes:               bulk (all reads)")
+        return
     logger.info("  Barcodes:               %s", n_barcodes)
 
     if max_memory:
@@ -473,9 +480,9 @@ def split_and_index_bam(bam_file, output_dir, mito_chr):
     logger.info("  Mitochondrial reads: %s", mito_bam)
     logger.info("  Nuclear reads: %s", nuclear_bam)
 
-    with pysam.AlignmentFile(bam_file, "rb") as inbam:
-        with pysam.AlignmentFile(mito_bam, "wb", template=inbam) as mito_out:
-            with pysam.AlignmentFile(nuclear_bam, "wb", template=inbam) as nuclear_out:
+    with pysam.AlignmentFile(str(bam_file), "rb") as inbam:
+        with pysam.AlignmentFile(str(mito_bam), "wb", template=inbam) as mito_out:
+            with pysam.AlignmentFile(str(nuclear_bam), "wb", template=inbam) as nuclear_out:
                 for read in inbam.fetch():
                     if read.reference_name == mito_chr:
                         mito_out.write(read)

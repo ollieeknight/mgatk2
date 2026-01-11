@@ -200,10 +200,10 @@ def create_depth_vs_fragments_plot(metadata_file):
 def generate_html_report(
     output_dir: Path,
     sample_name: str = "mgatk2",
-    title: str = None,
-    subtitle: str = None,
-    working_directory: str = None,
-    input_dir: str = None,
+    title: str | None = None,
+    subtitle: str | None = None,
+    working_directory: str | None = None,
+    input_dir: str | None = None,
 ):
     """Generate HTML report with QC plots"""
     output_dir = Path(output_dir)

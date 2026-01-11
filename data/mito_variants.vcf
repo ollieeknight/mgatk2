@@ -1,0 +1,10 @@
+##fileformat=VCFv4.2
+##source=custom_R_script
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chrM	513	.	G	A	.	.	.
+chrM	1419	.	G	A	.	.	.
+chrM	4848	.	G	A	.	.	.
+chrM	5997	.	G	A	.	.	.
+chrM	6179	.	G	A	.	.	.
+chrM	6180	.	G	A	.	.	.
+chrM	8184	.	G	A	.	.	.

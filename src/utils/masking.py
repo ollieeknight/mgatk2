@@ -116,7 +116,7 @@ def _write_fasta_sequence(file_handle, chrom: str, sequence: str, line_width: in
 def extract_mt_sequence(fasta_path: Path, mt_chrom: str = "MT") -> str:
     """Extract mitochondrial sequence from FASTA file"""
     current_chrom = None
-    sequence = []
+    sequence: list[str] = []
 
     with open(fasta_path) as f:
         for line in f:

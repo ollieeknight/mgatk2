@@ -4,6 +4,7 @@ import gc
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import pysam
 
@@ -34,9 +35,9 @@ class MtDNAPipeline:
         output_format: str = "standard",
         barcode_metadata=None,
         sample_name: str = "mgatk2",
-        report_title: str = None,
-        report_subtitle: str = None,
-        working_directory: str = None,
+        report_title: str | None = None,
+        report_subtitle: str | None = None,
+        working_directory: str | None = None,
     ):
         self.bam_path = Path(bam_path)
         self.barcodes = set(barcodes)
@@ -75,7 +76,7 @@ class MtDNAPipeline:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def run(self) -> dict[str, any]:
+    def run(self) -> dict[str, Any]:
         start_time = time.time()
 
         logger.info("")
@@ -170,7 +171,7 @@ class MtDNAPipeline:
 
 def run_pipeline(
     bam_path: str,
-    barcode_file: str = None,
+    barcode_file: str | None = None,
     output_dir: str = "",
     sample_name: str = "mgatk",
     min_baseq: int = 20,
@@ -184,14 +185,14 @@ def run_pipeline(
     barcode_tag: str = "CB",
     mito_chr: str = "chrM",
     n_cores: int = 8,
-    batch_size: int = None,
+    batch_size: int | None = None,
     max_memory_gb: float = 128.0,
     output_format: str = "standard",
     sequential: bool = False,
-    report_title: str = None,
-    report_subtitle: str = None,
-    working_directory: str = None,
-) -> dict[str, any]:
+    report_title: str | None = None,
+    report_subtitle: str | None = None,
+    working_directory: str | None = None,
+) -> dict[str, Any]:
     """Run the pipeline with individual parameters"""
     barcode_metadata = None
 

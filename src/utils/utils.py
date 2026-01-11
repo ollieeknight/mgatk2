@@ -11,7 +11,7 @@ from core.exceptions import InvalidInputError
 logger = logging.getLogger(__name__)
 
 
-def load_barcodes(barcode_file: str) -> list[str]:
+def load_barcodes(barcode_file: str) -> list[str] | None:
     """Load barcodes from file."""
     if not barcode_file:
         return None
@@ -26,19 +26,22 @@ def load_barcodes(barcode_file: str) -> list[str]:
         raise
 
 
-def load_singlecell_csv(csv_file: str) -> tuple[list[str], dict[str, list] | None]:
+def load_singlecell_csv(csv_file: str) -> tuple[list[str] | None, dict[str, list] | None]:
     """Load barcodes and metadata from cellranger-atac singlecell.csv file."""
     if csv_file is None:
         return None, None
 
     try:
         barcodes = []
-        metadata = {}
+        metadata: dict[str, list] = {}
         total_rows = 0
 
         with open(csv_file) as f:
             reader = csv.DictReader(f)
             headers = reader.fieldnames
+
+            if headers is None:
+                raise InvalidInputError("CSV file has no headers")
 
             if "is__cell_barcode" not in headers:
                 raise InvalidInputError("singlecell.csv missing 'is__cell_barcode' column")

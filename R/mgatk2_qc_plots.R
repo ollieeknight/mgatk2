@@ -44,7 +44,7 @@ ggplot(position_coverage, aes(x = position, y = mean_coverage)) +
   theme_classic() + 
   theme(legend.position = 'none') +
   scale_x_continuous(expand = c(0, 0), limits = c(0, max(mgatk_data$positions))) +
-  scale_y_continuous(expand = c(0, 0), trans = 'log10')
+  scale_y_continuous(expand = c(0, 0))
   
 ggplot(position_coverage, aes(x = position, y = mean_coverage)) +
   geom_line(color = "darkblue", linewidth = 0.5) +

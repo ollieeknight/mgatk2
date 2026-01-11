@@ -43,14 +43,14 @@ class IncrementalHDF5Writer:
         self.n_positions = config.mito_length
         self.barcode_metadata = barcode_metadata
 
-        self.cell_stats = []
-        self.position_base_counts = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
-        self.cell_depths = {}
+        self.cell_stats: list[dict] = []
+        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
+        self.cell_depths: dict[str, int] = {}
 
-        self.counts_file = None
-        self.metadata_file = None
+        self.counts_file: h5py.File
+        self.metadata_file: h5py.File
         self.write_error_count = 0
-        self.batch_buffer = []
+        self.batch_buffer: list[dict] = []
         self.cells_written = 0
 
         self._init_hdf5_files()
@@ -412,9 +412,9 @@ class IncrementalTextWriter:
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self.config = config
         self.barcodes = set(barcodes)
-        self.cell_stats = []
-        self.position_base_counts = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
-        self.cell_depths = {}
+        self.cell_stats: list[dict] = []
+        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
+        self.cell_depths: dict[str, int] = {}
 
         bases = ["A", "C", "G", "T"]
         self.base_files = {}
@@ -435,7 +435,7 @@ class IncrementalTextWriter:
         depths = [counts["depth"] for counts in pileup.values()]
         self.cell_depths[barcode] = np.mean(depths) if depths else 0
 
-        pos_data = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+        pos_data: dict = defaultdict(lambda: defaultdict(lambda: [0, 0]))
 
         for pos, counts in pileup.items():
             pos_1based = pos + 1

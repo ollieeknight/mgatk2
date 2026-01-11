@@ -84,7 +84,7 @@ class PipelineConfig:
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,
         n_cores: int = 8,
-        batch_size: int = None,
+        batch_size: int | None = None,
         max_memory_gb: float = 128.0,
         sequential: bool = False,
         min_reads_per_cell: int = 1,
