@@ -31,6 +31,9 @@ mgatk2 = "cli:main"
 where = ["src"]
 include = ["*"]
 
+[tool.setuptools.package-data]
+"*" = ["data/blacklists/*.bed", "data/references/*.fasta"]
+
 [tool.black]
 line-length = 100
 target-version = ['py310']

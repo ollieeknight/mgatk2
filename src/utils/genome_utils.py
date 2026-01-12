@@ -2,7 +2,13 @@
 Genome nomenclature utilities for handling different naming conventions.
 """
 
+import sys
 from pathlib import Path
+
+if sys.version_info >= (3, 9):
+    from importlib.resources import files
+else:
+    from importlib_resources import files
 
 # Genome nomenclature mapping - bidirectional
 GENOME_ALIASES = {
@@ -48,10 +54,17 @@ def get_reference_path(genome: str, data_dir: Path | None = None) -> Path:
     normalized = normalize_genome_name(genome)
 
     if data_dir is None:
-        # Get package data directory
-        data_dir = Path(__file__).parent.parent / "data" / "references"
-
-    ref_path = data_dir / f"{normalized}_MT.fasta"
+        # Use importlib.resources to get package data
+        try:
+            package_files = files("data.references")
+            ref_path = Path(str(package_files / f"{normalized}_MT.fasta"))
+        except (ModuleNotFoundError, TypeError):
+            # Fallback for development mode
+            ref_path = (
+                Path(__file__).parent.parent / "data" / "references" / f"{normalized}_MT.fasta"
+            )
+    else:
+        ref_path = data_dir / f"{normalized}_MT.fasta"
 
     if not ref_path.exists():
         raise FileNotFoundError(
@@ -66,10 +79,17 @@ def get_blacklist_path(genome: str, data_dir: Path | None = None) -> Path:
     normalized = normalize_genome_name(genome)
 
     if data_dir is None:
-        # Get package data directory
-        data_dir = Path(__file__).parent.parent / "data" / "blacklists"
-
-    blacklist_path = data_dir / f"{normalized}_numts.bed"
+        # Use importlib.resources to get package data
+        try:
+            package_files = files("data.blacklists")
+            blacklist_path = Path(str(package_files / f"{normalized}_numts.bed"))
+        except (ModuleNotFoundError, TypeError):
+            # Fallback for development mode
+            blacklist_path = (
+                Path(__file__).parent.parent / "data" / "blacklists" / f"{normalized}_numts.bed"
+            )
+    else:
+        blacklist_path = data_dir / f"{normalized}_numts.bed"
 
     if not blacklist_path.exists():
         raise FileNotFoundError(
