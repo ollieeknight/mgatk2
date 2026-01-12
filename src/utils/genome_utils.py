@@ -3,13 +3,8 @@ Genome nomenclature utilities for handling different naming conventions.
 """
 
 import gzip
-import sys
+from importlib.resources import files
 from pathlib import Path
-
-if sys.version_info >= (3, 9):
-    from importlib.resources import files
-else:
-    from importlib_resources import files
 
 # Genome nomenclature mapping - bidirectional
 GENOME_ALIASES = {
@@ -125,17 +120,17 @@ def load_blacklist_regions(blacklist_path: Path) -> list:
 def detect_fasta_chr_prefix(fasta_path: Path) -> bool:
     """
     Detect whether FASTA uses 'chr' prefix by checking first few chromosome names.
-    
+
     Returns:
         True if chromosomes use 'chr' prefix (chr1, chr2, chrM, etc.)
         False if chromosomes don't use prefix (1, 2, MT, etc.)
     """
     open_func = gzip.open if str(fasta_path).endswith(".gz") else open
     mode = "rt" if str(fasta_path).endswith(".gz") else "r"
-    
+
     chr_count = 0
     no_chr_count = 0
-    
+
     with open_func(fasta_path, mode) as f:
         for line in f:
             if line.startswith(">"):
@@ -145,11 +140,11 @@ def detect_fasta_chr_prefix(fasta_path: Path) -> bool:
                     chr_count += 1
                 elif chrom.isdigit() or chrom in ("X", "Y", "M", "MT"):
                     no_chr_count += 1
-                
+
                 # Sample first 5 chromosomes
                 if chr_count + no_chr_count >= 5:
                     break
-    
+
     # Return True if majority use chr prefix
     return chr_count > no_chr_count
 
@@ -157,11 +152,11 @@ def detect_fasta_chr_prefix(fasta_path: Path) -> bool:
 def normalise_bed_chromosomes(regions: list, use_chr_prefix: bool) -> list:
     """
     Normalise BED file chromosome names to match FASTA naming convention.
-    
+
     Args:
         regions: List of (chrom, start, end) tuples from BED file
         use_chr_prefix: Whether target FASTA uses 'chr' prefix
-        
+
     Returns:
         List of regions with normalised chromosome names
     """
