@@ -7,7 +7,7 @@ import click
 
 from ..options import call_options
 from ..utils import (
-    normalize_mito_chr,
+    normalise_mito_chr,
     run_pipeline_command,
     setup_file_logging,
 )
@@ -51,7 +51,7 @@ def call(
             raise SystemExit(1)
 
         # Normalise mito chr
-        mito_chr = normalize_mito_chr(mito_genome)
+        mito_chr = normalise_mito_chr(mito_genome)
 
         # Show detected files and configuration
         logger.info("Auto-detected %s BAM files:", len(bam_files))
