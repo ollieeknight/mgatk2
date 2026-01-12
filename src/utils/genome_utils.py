@@ -2,6 +2,7 @@
 Genome nomenclature utilities for handling different naming conventions.
 """
 
+import gzip
 import sys
 from pathlib import Path
 
@@ -119,3 +120,60 @@ def load_blacklist_regions(blacklist_path: Path) -> list:
                 end = int(parts[2])
                 regions.append((chrom, start, end))
     return regions
+
+
+def detect_fasta_chr_prefix(fasta_path: Path) -> bool:
+    """
+    Detect whether FASTA uses 'chr' prefix by checking first few chromosome names.
+    
+    Returns:
+        True if chromosomes use 'chr' prefix (chr1, chr2, chrM, etc.)
+        False if chromosomes don't use prefix (1, 2, MT, etc.)
+    """
+    open_func = gzip.open if str(fasta_path).endswith(".gz") else open
+    mode = "rt" if str(fasta_path).endswith(".gz") else "r"
+    
+    chr_count = 0
+    no_chr_count = 0
+    
+    with open_func(fasta_path, mode) as f:
+        for line in f:
+            if line.startswith(">"):
+                chrom = line.strip()[1:].split()[0]
+                # Check if it's a standard chromosome (not scaffold/contig)
+                if chrom.startswith("chr"):
+                    chr_count += 1
+                elif chrom.isdigit() or chrom in ("X", "Y", "M", "MT"):
+                    no_chr_count += 1
+                
+                # Sample first 5 chromosomes
+                if chr_count + no_chr_count >= 5:
+                    break
+    
+    # Return True if majority use chr prefix
+    return chr_count > no_chr_count
+
+
+def normalize_bed_chromosomes(regions: list, use_chr_prefix: bool) -> list:
+    """
+    Normalize BED file chromosome names to match FASTA naming convention.
+    
+    Args:
+        regions: List of (chrom, start, end) tuples from BED file
+        use_chr_prefix: Whether target FASTA uses 'chr' prefix
+        
+    Returns:
+        List of regions with normalized chromosome names
+    """
+    normalized = []
+    for chrom, start, end in regions:
+        if use_chr_prefix:
+            # Add chr prefix if not present
+            if not chrom.startswith("chr"):
+                chrom = f"chr{chrom}"
+        else:
+            # Remove chr prefix if present
+            if chrom.startswith("chr"):
+                chrom = chrom[3:]
+        normalized.append((chrom, start, end))
+    return normalized

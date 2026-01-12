@@ -50,9 +50,11 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
 
     try:
         from utils.genome_utils import (
+            detect_fasta_chr_prefix,
             get_blacklist_path,
             get_mt_chrom_name,
             load_blacklist_regions,
+            normalize_bed_chromosomes,
             normalize_genome_name,
         )
         from utils.masking import mask_fasta
@@ -65,19 +67,35 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
         blacklist_path = get_blacklist_path(genome_normalized)
         logger.info("Blacklist file:         %s", blacklist_path)
 
-        # Get MT chromosome name
+        # Detect FASTA chromosome naming convention
+        use_chr_prefix = detect_fasta_chr_prefix(Path(input_fasta))
+        logger.info("Input FASTA:            %s", Path(input_fasta).resolve())
+        logger.info("  Compressed:           %s", str(input_fasta).endswith(".gz"))
+        logger.info("  Chr naming:           %s", "chr1, chr2..." if use_chr_prefix else "1, 2...")
+
+        # Get MT chromosome name and normalize it
         if mt_chrom is None:
             mt_chrom = get_mt_chrom_name(genome_normalized)
-        logger.info("Input FASTA:            %s", Path(input_fasta).resolve())
+            # Normalize MT chromosome name to match FASTA
+            if not use_chr_prefix and mt_chrom.startswith("chr"):
+                mt_chrom = mt_chrom[3:]
+            elif use_chr_prefix and not mt_chrom.startswith("chr"):
+                mt_chrom = f"chr{mt_chrom}"
         logger.info("MT chromosome:          %s", mt_chrom)
-        logger.info("Mask NUMTs:             %s", mask_numts)
         logger.info("Output FASTA:           %s", Path(output_fasta).resolve())
+        logger.info("Mask NUMTs:             %s", mask_numts)
 
-        # Load blacklist regions
+        # Load and normalize blacklist regions
         numt_regions = None
         if mask_numts:
             numt_regions = load_blacklist_regions(blacklist_path)
+            numt_regions = normalize_bed_chromosomes(numt_regions, use_chr_prefix)
             logger.info("Loaded %s NUMT regions to mask", len(numt_regions))
+            if verbose:
+                logger.debug(
+                    "Sample normalized regions: %s",
+                    numt_regions[:3] if len(numt_regions) >= 3 else numt_regions,
+                )
 
         # Perform masking
         logger.info("Masking genome...")
