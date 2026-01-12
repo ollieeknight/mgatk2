@@ -81,7 +81,7 @@ def write_parameters_json(parameters: dict, output_path: Path):
 
 
 def write_reference_fasta(ref_alleles: dict, output_path: Path, chr_name: str, length: int):
-    """Write reference sequence in FASTA format."""
+    """Write reference sequence in FASTA format"""
     with open(output_path, "w") as f:
         f.write(f">{chr_name}\n")
 
@@ -96,7 +96,7 @@ def write_reference_fasta(ref_alleles: dict, output_path: Path, chr_name: str, l
 
 
 def write_tsv_file(data: list[dict], output_path: Path, delimiter="\t"):
-    """Write data to TSV/CSV file."""
+    """Write data to TSV/CSV file"""
     if not data:
         return
 
@@ -125,7 +125,7 @@ def write_tsv_file(data: list[dict], output_path: Path, delimiter="\t"):
 
 
 def validate_file_format(file_path: Path, expected_format: str):
-    """Validate file format based on extension."""
+    """Validate file format based on extension"""
     file_path = Path(file_path)
 
     format_extensions = {
@@ -139,7 +139,6 @@ def validate_file_format(file_path: Path, expected_format: str):
 
     valid_extensions = format_extensions.get(expected_format.lower(), [])
 
-    # Check for gzipped versions
     if file_path.suffix == ".gz":
         stem_suffix = file_path.stem.split(".")[-1] if "." in file_path.stem else ""
         actual_extension = f".{stem_suffix}.gz"
@@ -156,7 +155,7 @@ def validate_file_format(file_path: Path, expected_format: str):
 
 
 def detect_delimiter(file_path: Path) -> str:
-    """Detect delimiter in CSV/TSV file."""
+    """Detect delimiter in CSV/TSV file"""
     import csv
 
     with open(file_path) as f:
@@ -167,7 +166,7 @@ def detect_delimiter(file_path: Path) -> str:
 
 
 def get_compression_type(file_path: Path) -> str:
-    """Detect compression type of file."""
+    """Detect compression type of file"""
     if file_path.suffix == ".gz":
         return "gzip"
     if file_path.suffix in [".bz2"]:

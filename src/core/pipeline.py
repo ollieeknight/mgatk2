@@ -188,15 +188,16 @@ def run_pipeline(
     sample_name: str = "mgatk",
     min_baseq: int = 20,
     min_mapq: int = 30,
-    min_reads_per_cell: int = 10,
+    min_reads_per_cell: int = 1,
     max_strand_bias: float = 1.0,
     min_distance_from_end: int = 5,
     skip_deduplication: bool = False,
     use_fragment_length_dedup: bool = True,
     write_cell_bams: bool = False,
     barcode_tag: str = "CB",
+    min_barcode_reads: int = 1,
     mito_chr: str = "chrM",
-    n_cores: int = 8,
+    n_cores: int = 16,
     batch_size: int | None = None,
     max_memory_gb: float = 128.0,
     output_format: str = "standard",
@@ -213,12 +214,12 @@ def run_pipeline(
 
         logger.info("No barcode file provided - extracting barcodes from BAM")
         barcodes = extract_barcodes_from_bam(
-            bam_path, barcode_tag=barcode_tag, mito_chr=mito_chr, min_reads=min_reads_per_cell
+            bam_path, barcode_tag=barcode_tag, mito_chr=mito_chr, min_reads=min_barcode_reads
         )
         if not barcodes:
             raise InvalidInputError(
                 f"No barcodes found in BAM file with tag '{barcode_tag}' "
-                f"and minimum {min_reads_per_cell} reads"
+                f"and minimum {min_barcode_reads} reads"
             )
     elif barcode_file.endswith(".csv"):
         from utils.utils import load_singlecell_csv

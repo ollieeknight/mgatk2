@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def extract_barcodes_from_bam(
     bam_path: str, barcode_tag: str = "CB", mito_chr: str = "chrM", min_reads: int = 10
 ) -> list[str]:
-    """Extract unique barcodes from a BAM file."""
+    """Extract unique barcodes from a BAM file"""
     logger.info("Extracting barcodes from BAM file...")
     logger.info("  Looking for tag '%s' on chromosome '%s'", barcode_tag, mito_chr)
 

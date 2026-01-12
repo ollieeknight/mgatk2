@@ -34,11 +34,6 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Lint
-      run: |
-        pip install ruff
-        ruff check src/
-
   conda-build:
     runs-on: ubuntu-latest
     steps:

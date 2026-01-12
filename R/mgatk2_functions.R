@@ -421,3 +421,30 @@ calculate_allele_freq <- function(mgatk_data, variants, min_coverage = 1) {
   
   return(allele_freq)
 }
+
+calculate_strand_coverage_stats <- function(mgatk_data) {
+  # Calculate coverage separately for forward (H-strand) and reverse (L-strand)
+  # Forward reads map to the heavy strand, reverse reads to the light strand
+  
+  # Get all base counts for each strand
+  fwd_coverage <- mgatk_data$counts$A_fwd + mgatk_data$counts$C_fwd + 
+                  mgatk_data$counts$G_fwd + mgatk_data$counts$T_fwd
+  
+  rev_coverage <- mgatk_data$counts$A_rev + mgatk_data$counts$C_rev + 
+                  mgatk_data$counts$G_rev + mgatk_data$counts$T_rev
+  
+  strand_stats <- tibble(
+    position = mgatk_data$positions,
+    mean_fwd_coverage = colMeans(fwd_coverage, na.rm = TRUE),
+    mean_rev_coverage = colMeans(rev_coverage, na.rm = TRUE),
+    total_coverage = colMeans(mgatk_data$counts$coverage, na.rm = TRUE)
+  ) %>%
+    mutate(
+      strand_balance = ifelse(total_coverage > 0, 
+                             mean_fwd_coverage / total_coverage, 
+                             0.5),
+      strand_imbalance = abs(mean_fwd_coverage - mean_rev_coverage)
+    )
+  
+  return(strand_stats)
+}

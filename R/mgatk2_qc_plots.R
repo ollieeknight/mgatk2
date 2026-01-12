@@ -85,6 +85,37 @@ ggplot(transposition_stats, aes(x = position, y = tn5_cuts_total)) +
   scale_x_continuous(expand = c(0, 0)) +
   scale_y_continuous(expand = c(0, 0))
 
+# Strand-specific coverage (H-strand vs L-strand)
+strand_stats <- calculate_strand_coverage_stats(mgatk_data)
+
+# Mirrored plot similar to Tn5 cuts
+ggplot(strand_stats, aes(x = position)) +
+  geom_ribbon(aes(ymin = 0, ymax = mean_fwd_coverage), 
+              fill = "#A23B72", alpha = 0.6) +
+  geom_ribbon(aes(ymin = 0, ymax = -mean_rev_coverage), 
+              fill = "#2E86AB", alpha = 0.8) +
+  geom_hline(yintercept = 0, colour = "black", linewidth = 0.8) +
+  labs(title = NULL,
+       x = "chrM (bp)", 
+       y = "Mean coverage (Forward = H-strand, Reverse = L-strand)") +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0)) +
+  annotate("text", x = max(strand_stats$position) * 0.8, y = max(strand_stats$mean_fwd_coverage) * 0.9,
+           label = "Forward (H-strand)", colour = "#A23B72", size = 3.5) +
+  annotate("text", x = max(strand_stats$position) * 0.8, y = -max(strand_stats$mean_rev_coverage) * 0.9,
+           label = "Reverse (L-strand)", colour = "#2E86AB", size = 3.5)
+
+# Strand balance across the genome
+ggplot(strand_stats, aes(x = position, y = strand_balance)) +
+  geom_line(colour = "darkblue", linewidth = 0.5) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "red") +
+  labs(title = NULL,
+       x = "chrM (bp)", 
+       y = "Forward strand proportion (0.5 = balanced)") +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1))
+
 variants <- identify_variants(mgatk_data)
 
 variants_filtered <- variants %>%

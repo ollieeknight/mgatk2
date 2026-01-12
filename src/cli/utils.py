@@ -3,35 +3,16 @@
 import csv
 import logging
 import os
-import random
 import sys
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
-
-import pysam
 
 from core.exceptions import InvalidInputError, ProcessingError
 from core.pipeline import run_pipeline
 from utils.utils import validate_bam_file, validate_barcode_file
 
 logger = logging.getLogger(__name__)
-
-
-def parse_reads_number(reads_str: str) -> int:
-    """Parse human-readable number format like 1M, 10M, 500K, etc"""
-    if isinstance(reads_str, int):
-        return reads_str
-
-    reads_str = str(reads_str).strip().upper()
-
-    if reads_str.endswith("K"):
-        return int(float(reads_str[:-1]) * 1000)
-    if reads_str.endswith("M"):
-        return int(float(reads_str[:-1]) * 1000000)
-    if reads_str.endswith("B"):
-        return int(float(reads_str[:-1]) * 1000000000)
-    return int(reads_str)
 
 
 def auto_detect_10x_structure(
@@ -82,7 +63,6 @@ def _find_barcode_file(directory: Path) -> str | None:
     for pattern in [
         "filtered_peak_bc_matrix/barcodes.tsv",
         "filtered_tf_bc_matrix/barcodes.tsv.gz",
-        "raw_peak_bc_matrix/barcodes.tsv",
     ]:
         bc_file = directory / pattern
         if bc_file.exists():
@@ -101,33 +81,6 @@ def normalize_mito_chr(mito_genome: str) -> str:
         return mito_genome
     logger.warning("Unusual mitochondrial chromosome name: %s", mito_genome)
     return mito_genome
-
-
-def subsample_bam(input_bam: str, output_bam: str, mito_chr: str, n_reads: int):
-    """Randomly subsample reads from BAM file"""
-    # Count total reads
-    with pysam.AlignmentFile(input_bam, "rb") as bam:
-        total = sum(1 for _ in bam.fetch(mito_chr))
-
-    if total <= n_reads:
-        logger.warning(f"Only {total:,} reads available (requested {n_reads:,})")
-        n_reads, rate = total, 1.0
-    else:
-        rate = n_reads / total
-
-    logger.info(f"Sampling {n_reads:,} of {total:,} reads ({rate * 100:.1f}%)")
-
-    # Random sampling
-    indices = set(random.sample(range(total), n_reads))
-
-    with pysam.AlignmentFile(input_bam, "rb") as inbam:
-        with pysam.AlignmentFile(output_bam, "wb", template=inbam) as outbam:
-            for i, read in enumerate(inbam.fetch(mito_chr)):
-                if i in indices:
-                    outbam.write(read)
-
-    pysam.index(output_bam)
-    logger.info(f"Created {output_bam}")
 
 
 def get_10x_parent_directory_name(bam_path: str) -> str:
@@ -174,6 +127,7 @@ def run_pipeline_command(
     output_dir,
     barcode_file,
     barcode_tag,
+    min_barcode_reads,
     mito_genome,
     ncores,
     verbose,
@@ -254,6 +208,7 @@ def run_pipeline_command(
             mito_chr,
             ncores,
             barcode_tag,
+            min_barcode_reads,
             base_qual,
             min_mapq,
             min_reads,
@@ -290,6 +245,7 @@ def run_pipeline_command(
             "max_strand_bias": max_strand_bias,
             "min_distance_from_end": min_distance_from_end,
             "barcode_tag": barcode_tag,
+            "min_barcode_reads": min_barcode_reads,
             "mito_chr": mito_chr,
             "n_cores": _determine_cores(ncores),
             "batch_size": batch_size or _determine_cores(ncores),
@@ -344,14 +300,14 @@ def _determine_cores(ncores):
             try:
                 actual_cores = int(slurm_cpus)
             except ValueError:
-                actual_cores = max(1, multiprocessing.cpu_count() - 1)
+                actual_cores = max(1, multiprocessing.cpu_count())
         elif slurm_ntasks:
             try:
                 actual_cores = int(slurm_ntasks)
             except ValueError:
-                actual_cores = max(1, multiprocessing.cpu_count() - 1)
+                actual_cores = max(1, multiprocessing.cpu_count())
         else:
-            actual_cores = max(1, multiprocessing.cpu_count() - 1)
+            actual_cores = max(1, multiprocessing.cpu_count())
     else:
         actual_cores = ncores
 
@@ -365,6 +321,7 @@ def _log_configuration(
     mito_chr,
     ncores,
     barcode_tag,
+    min_barcode_reads,
     base_qual,
     min_mapq,
     min_reads,
@@ -381,7 +338,7 @@ def _log_configuration(
     logger.info("  Input BAM:              %s", os.path.realpath(bam_path))
     logger.info(
         "  Input barcodes:         %s",
-        os.path.realpath(barcode_file) if barcode_file else "None (bulk calling)",
+        os.path.realpath(barcode_file) if barcode_file else "None (auto-detect from BAM)",
     )
     logger.info("  Output directory:       %s", os.path.realpath(output_dir))
     logger.info("  BAM prefix:             %s", mito_chr)
@@ -397,15 +354,17 @@ def _log_configuration(
         elif slurm_ntasks:
             cores_msg = f"{actual_cores} (SLURM NTASKS)"
         else:
-            cores_msg = f"{actual_cores} (all available - 1)"
+            cores_msg = f"{actual_cores} (all available)"
     else:
         cores_msg = str(actual_cores)
     logger.info("  Cores:                  %s", cores_msg)
 
     if batch_size is None:
-        batch_size = actual_cores
+        batch_size = 250
 
     logger.info("  Barcode tag:            %s", barcode_tag)
+    if barcode_file is None:
+        logger.info("  Min barcode reads:      %s", min_barcode_reads)
     logger.info("  Min base quality:       %s", base_qual)
     logger.info("  Min mapping quality:    %s", min_mapq)
     logger.info("  Min reads per cell:     %s", min_reads)
@@ -467,32 +426,3 @@ def _log_configuration(
 
     if max_memory:
         logger.info("  Max memory limit:       %sGB", max_memory)
-
-
-def split_and_index_bam(bam_file, output_dir, mito_chr):
-    """Split BAM into mitochondrial and nuclear components and index them."""
-    from pathlib import Path
-
-    base_name = Path(bam_file).stem
-    mito_bam = Path(output_dir) / f"{base_name}_mito.bam"
-    nuclear_bam = Path(output_dir) / f"{base_name}_nuclear.bam"
-
-    logger.info("Splitting BAM file into mitochondrial and nuclear reads...")
-    logger.info("  Mitochondrial reads: %s", mito_bam)
-    logger.info("  Nuclear reads: %s", nuclear_bam)
-
-    with pysam.AlignmentFile(str(bam_file), "rb") as inbam:
-        with pysam.AlignmentFile(str(mito_bam), "wb", template=inbam) as mito_out:
-            with pysam.AlignmentFile(str(nuclear_bam), "wb", template=inbam) as nuclear_out:
-                for read in inbam.fetch():
-                    if read.reference_name == mito_chr:
-                        mito_out.write(read)
-                    else:
-                        nuclear_out.write(read)
-
-    # Index both files
-    logger.info("Indexing split BAM files...")
-    pysam.index(str(mito_bam))
-    pysam.index(str(nuclear_bam))
-
-    logger.info("BAM splitting and indexing complete.")

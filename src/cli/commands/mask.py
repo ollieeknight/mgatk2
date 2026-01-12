@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verbose):
-    """Hard-mask reference genome FASTA with mitochondrial blacklists"""
+    """Hard-mask reference genome FASTA with blacklists"""
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)

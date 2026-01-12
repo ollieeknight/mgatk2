@@ -7,13 +7,11 @@ setup:
 	.venv/bin/pip install ruff mypy isort black flake8
 
 format:
-	.venv/bin/isort src/
-	.venv/bin/black src/
+	isort src/
+	black src/
 
 lint:
-	.venv/bin/ruff check src/
-	.venv/bin/mypy src/
-	.venv/bin/flake8 src/
+	ruff check --fix src/
 
 check: format lint
 

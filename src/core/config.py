@@ -7,7 +7,7 @@ import numpy
 
 @dataclass
 class QualityThresholds:
-    """Quality filtering parameters."""
+    """Quality filtering parameters"""
 
     min_baseq: int = 20
     min_mapq: int = 30
@@ -27,8 +27,8 @@ class DeduplicationConfig:
 class PerformanceConfig:
     """Resource management."""
 
-    n_cores: int = 8
-    batch_size: int = 8
+    n_cores: int = 16
+    batch_size: int = 250
     max_memory_gb: float = 128.0
     sequential: bool = False
 

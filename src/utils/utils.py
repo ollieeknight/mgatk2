@@ -12,14 +12,26 @@ logger = logging.getLogger(__name__)
 
 
 def load_barcodes(barcode_file: str) -> list[str] | None:
-    """Load barcodes from file."""
+    """Load barcodes from file.
+
+    Supports:
+    - singlecell.csv (10x scATAC format with is__cell_barcode column)
+    - barcodes.tsv or .csv (simple list, one per line)
+    """
     if not barcode_file:
         return None
 
+    # Check if this is a singlecell.csv file
+    if barcode_file.endswith("singlecell.csv"):
+        logger.info("Detected singlecell.csv format")
+        barcodes, _ = load_singlecell_csv(barcode_file)
+        return barcodes
+
+    # Load as simple barcode list (TSV or CSV)
     try:
         with open(barcode_file) as f:
             barcodes = [line.strip() for line in f if line.strip()]
-        logger.info(f"Found {len(barcodes)} barcodes")
+        logger.info(f"Loaded {len(barcodes)} barcodes from file")
         return barcodes
     except Exception as e:
         logger.error(f"Error loading barcodes: {e}")
@@ -73,7 +85,7 @@ def load_singlecell_csv(csv_file: str) -> tuple[list[str] | None, dict[str, list
         if len(barcodes) == 0:
             raise InvalidInputError(f"No cells found with is__cell_barcode == 1 in {csv_file}")
 
-        logger.info(f"Performing analysis on {len(barcodes)} barcodes")
+        logger.info(f"Performing analysis on {len(barcodes)} barcodes from singlecell.csv")
 
         return barcodes, metadata
 

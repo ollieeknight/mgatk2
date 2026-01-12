@@ -159,6 +159,106 @@ def create_read_start_sites_plot(metadata_file):
     return plot_to_base64(fig)
 
 
+def create_tn5_insertion_context_plot(counts_file, metadata_file):
+    """Create bar plot showing dinucleotide context of Tn5 insertion sites"""
+    with h5py.File(counts_file, "r") as f:
+        tn5_fwd = f["tn5_cuts_fwd"][:, :].sum(axis=1).astype(np.int64)
+        tn5_rev = f["tn5_cuts_rev"][:, :].sum(axis=1).astype(np.int64)
+
+    with h5py.File(metadata_file, "r") as f:
+        refallele = f["reference"][:]
+        if isinstance(refallele[0], bytes):
+            refallele = [x.decode() for x in refallele]
+        else:
+            refallele = list(refallele)
+
+    # Combine forward and reverse Tn5 cuts
+    total_tn5 = tn5_fwd + tn5_rev
+
+    # Count dinucleotide contexts at Tn5 insertion sites
+    dinuc_counts = {}
+    bases = ["A", "C", "G", "T"]
+    for b1 in bases:
+        for b2 in bases:
+            dinuc_counts[f"{b1}{b2}"] = 0
+
+    # For each position with Tn5 cuts, get the dinucleotide context
+    for pos in range(len(total_tn5) - 1):
+        if total_tn5[pos] > 0:
+            base1 = refallele[pos]
+            base2 = refallele[pos + 1]
+            dinuc = f"{base1}{base2}"
+            if dinuc in dinuc_counts:
+                dinuc_counts[dinuc] += total_tn5[pos]
+
+    # Sort by dinucleotide for consistent ordering
+    dinucs = sorted(dinuc_counts.keys())
+    counts = [dinuc_counts[d] for d in dinucs]
+
+    # Calculate percentages
+    total_cuts = sum(counts)
+    if total_cuts == 0:
+        logger.warning("No Tn5 cuts found for insertion context plot")
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(
+            0.5,
+            0.5,
+            "No Tn5 cut data available",
+            ha="center",
+            va="center",
+            fontsize=14,
+            color="gray",
+        )
+        ax.axis("off")
+        return plot_to_base64(fig)
+
+    percentages = [(c / total_cuts) * 100 for c in counts]
+
+    # Create bar plot
+    fig, ax = plt.subplots(figsize=(8, 4))
+
+    # Color by base composition
+    colors = []
+    for dinuc in dinucs:
+        gc_content = (dinuc.count("G") + dinuc.count("C")) / 2
+        if gc_content == 0:
+            colors.append("#A23B72")  # AT-rich (magenta)
+        elif gc_content == 1:
+            colors.append("#2E86AB")  # GC-rich (blue)
+        else:
+            colors.append("#9B59B6")  # Mixed (purple)
+
+    bars = ax.bar(dinucs, percentages, color=colors, alpha=0.8, edgecolor="black", linewidth=0.5)
+
+    ax.set_xlabel("Dinucleotide context", fontsize=10, color="black")
+    ax.set_ylabel("Tn5 insertion frequency (%)", fontsize=10, color="black")
+    ax.set_ylim(0, max(percentages) * 1.1)
+    ax.tick_params(colors="black", labelsize=9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("black")
+    ax.spines["bottom"].set_color("black")
+    plt.xticks(rotation=45, ha="right")
+
+    # Add value labels on bars
+    for bar, pct in zip(bars, percentages, strict=True):
+        height = bar.get_height()
+        if height > 0.5:  # Only show label if bar is visible
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{pct:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="black",
+            )
+
+    plt.tight_layout()
+
+    return plot_to_base64(fig)
+
+
 def create_depth_vs_coverage_plot(metadata_file):
     """Coverage v s mtDNA depth plot"""
     with h5py.File(metadata_file, "r") as f:
@@ -373,6 +473,8 @@ def generate_html_report(
 
     transposition_plot = create_transposition_frequency_plot(counts_file)
 
+    tn5_context_plot = create_tn5_insertion_context_plot(counts_file, metadata_file)
+
     depth_plot = create_depth_vs_fragments_plot(metadata_file)
 
     depth_vs_coverage_plot = create_depth_vs_coverage_plot(metadata_file)
@@ -560,6 +662,14 @@ def generate_html_report(
         <h2>Tn5 transposition frequency</h2>
         <div class="plot">
             <img src="{transposition_plot}" alt="Transposition Frequency Plot">
+        </div>
+
+        <h2>Tn5 insertion sequence context</h2>
+        <div class="plot">
+            <img src="{tn5_context_plot}" alt="Tn5 Insertion Context Plot">
+            <p style="color: #666; font-size: 0.9em; margin-top: 10px;">
+                magenta = AT-rich, blue = GC-rich, purple = mixed
+            </p>
         </div>
 
         <div class="plot-grid">

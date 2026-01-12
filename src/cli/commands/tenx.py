@@ -2,56 +2,53 @@
 
 import click
 
-from ..options import common_options
+from ..options import tenx_options
 from ..utils import run_pipeline_command
 
 
 @click.command()
-@common_options
-@click.option(
-    "--sequential",
-    "sequential",
-    is_flag=True,
-    help="Process cells sequentially, disabling multiprocessing",
-)
+@tenx_options
 def tenx(
     bam_path,
-    output_dir,
+    mito_genome,
     barcode_file,
     barcode_tag,
-    mito_genome,
+    min_barcode_reads,
+    output_dir,
     ncores,
     verbose,
+    batch_size,
+    max_memory,
+    base_qual,
+    min_mapq,
+    min_reads,
+    max_strand_bias,
+    min_distance_from_end,
+    dedup_mode,
+    output_format,
     dry_run,
-    sequential,
 ):
-    """Run mgatk2 with original mgatk package behaviour.
+    """Run mgatk2 with original mgatk package behaviour"""
+    sequential = ncores == 1
 
-    Equivalent to 'mgatk2 run' with tenx-compatible defaults:
-    - No quality filtering (base_qual=0, mapq=0)
-    - Alignment-based deduplication only (no fragment length)
-    - Text output format
-    - Batch size optimised for 10x data
-
-    If no barcode file is provided, automatically extracts barcodes from the BAM file.
-    """
     run_pipeline_command(
         bam_path=bam_path,
         output_dir=output_dir,
         barcode_file=barcode_file,
         barcode_tag=barcode_tag,
+        min_barcode_reads=min_barcode_reads,
         mito_genome=mito_genome,
         ncores=ncores,
         verbose=verbose,
-        batch_size=9,
-        max_memory=None,
-        base_qual=0,
-        min_mapq=0,
-        min_reads=0,
-        max_strand_bias=1.0,
-        min_distance_from_end=0,
-        dedup_mode="alignment_start",
-        output_format="txt",
+        batch_size=batch_size,
+        max_memory=max_memory,
+        base_qual=base_qual,
+        min_mapq=min_mapq,
+        min_reads=min_reads,
+        max_strand_bias=max_strand_bias,
+        min_distance_from_end=min_distance_from_end,
+        dedup_mode=dedup_mode,
+        output_format=output_format,
         sequential=sequential,
         dry_run=dry_run,
     )
