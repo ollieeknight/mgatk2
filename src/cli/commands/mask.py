@@ -68,11 +68,10 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
         # Get MT chromosome name
         if mt_chrom is None:
             mt_chrom = get_mt_chrom_name(genome_normalized)
-        logger.info("MT chromosome:          %s", mt_chrom)
         logger.info("Input FASTA:            %s", Path(input_fasta).resolve())
-        logger.info("  Compressed:           %s", str(input_fasta).endswith(".gz"))
-        logger.info("Output FASTA:           %s", Path(output_fasta).resolve())
+        logger.info("MT chromosome:          %s", mt_chrom)
         logger.info("Mask NUMTs:             %s", mask_numts)
+        logger.info("Output FASTA:           %s", Path(output_fasta).resolve())
 
         # Load blacklist regions
         numt_regions = None
@@ -81,7 +80,7 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
             logger.info("Loaded %s NUMT regions to mask", len(numt_regions))
 
         # Perform masking
-        logger.info("Masking genome (this may take 1-2 minutes)...")
+        logger.info("Masking genome...")
         stats = mask_fasta(
             input_fasta=Path(input_fasta),
             output_fasta=Path(output_fasta),

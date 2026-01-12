@@ -32,6 +32,7 @@ def mask_fasta(
             if chrom not in numt_mask:
                 numt_mask[chrom] = []
             numt_mask[chrom].append((start, end))
+        logger.debug("NUMT regions loaded for chromosomes: %s", sorted(numt_mask.keys())[:10])
 
     # Handle both gzipped and uncompressed FASTA files
     open_func = gzip.open if str(input_fasta).endswith(".gz") else open
@@ -60,6 +61,8 @@ def mask_fasta(
                 current_chrom = line.strip()[1:].split()[0]
                 sequence = []
                 stats["chromosomes_processed"] += 1
+                if stats["chromosomes_processed"] <= 25:
+                    logger.debug("Processing chromosome: %s", current_chrom)
             else:
                 sequence.append(line.strip())
 
@@ -91,6 +94,8 @@ def _process_chromosome(
     seq_list = list(sequence)
 
     # Mask NUMT regions on nuclear chromosomes
+    if numt_regions:
+        logger.debug("Chromosome %s: Found %d NUMT regions to mask", chrom, len(numt_regions))
     if numt_regions:
         for start, end in numt_regions:
             # BED format is 0-indexed, half-open [start, end)
