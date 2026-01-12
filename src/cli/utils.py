@@ -34,7 +34,9 @@ def parse_reads_number(reads_str: str) -> int:
     return int(reads_str)
 
 
-def auto_detect_10x_structure(bam_path: str, barcode_file: str | None = None) -> tuple[str, str | None]:
+def auto_detect_10x_structure(
+    bam_path: str, barcode_file: str | None = None
+) -> tuple[str, str | None]:
     """Auto-detect 10x Genomics output structure"""
     path = Path(bam_path)
 
@@ -113,7 +115,7 @@ def subsample_bam(input_bam: str, output_bam: str, mito_chr: str, n_reads: int):
     else:
         rate = n_reads / total
 
-    logger.info(f"Sampling {n_reads:,} of {total:,} reads ({rate*100:.1f}%)")
+    logger.info(f"Sampling {n_reads:,} of {total:,} reads ({rate * 100:.1f}%)")
 
     # Random sampling
     indices = set(random.sample(range(total), n_reads))
@@ -237,13 +239,12 @@ def run_pipeline_command(
 
         mito_chr = normalize_mito_chr(mito_genome)
 
-        # Handle barcode file or bulk calling
+        # Barcode file will be auto-extracted in run_pipeline if None
         if barcode_file is None:
-            logger.info("No barcode file provided - performing bulk calling on all reads")
-            barcode_file_to_cleanup = None
+            logger.info("No barcode file provided - will extract barcodes from BAM")
         else:
-            logger.info("Using provided barcode file: %s", barcode_file)
-            barcode_file_to_cleanup = None
+            logger.info("Using barcode file: %s", barcode_file)
+        barcode_file_to_cleanup = None
 
         # Log configuration
         _log_configuration(

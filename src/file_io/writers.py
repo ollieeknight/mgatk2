@@ -44,7 +44,9 @@ class IncrementalHDF5Writer:
         self.barcode_metadata = barcode_metadata
 
         self.cell_stats: list[dict] = []
-        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
+        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(
+            lambda: {"A": 0, "C": 0, "G": 0, "T": 0}
+        )
         self.cell_depths: dict[str, int] = {}
 
         self.counts_file: h5py.File
@@ -335,16 +337,16 @@ class IncrementalHDF5Writer:
         if self.batch_buffer:
             self._write_batch()
 
-        # Determine reference alleles
+        # Determine reference alleles more efficiently
+        logger.info("Computing reference alleles...")
         bases = ["A", "C", "G", "T"]
-        ref_alleles = []
-        for pos in range(1, self.n_positions + 1):
-            if pos in self.position_base_counts:
-                counts = self.position_base_counts[pos]
+        ref_alleles = ["N"] * self.n_positions
+
+        for pos, counts in self.position_base_counts.items():
+            if 1 <= pos <= self.n_positions:
                 max_base = max(bases, key=lambda b: counts[b])
-                ref_alleles.append(max_base if counts[max_base] > 0 else "N")
-            else:
-                ref_alleles.append("N")
+                if counts[max_base] > 0:
+                    ref_alleles[pos - 1] = max_base
 
         # Write reference to metadata.h5
         ref_array = np.array(ref_alleles, dtype="S1")
@@ -413,7 +415,9 @@ class IncrementalTextWriter:
         self.config = config
         self.barcodes = set(barcodes)
         self.cell_stats: list[dict] = []
-        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
+        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(
+            lambda: {"A": 0, "C": 0, "G": 0, "T": 0}
+        )
         self.cell_depths: dict[str, int] = {}
 
         bases = ["A", "C", "G", "T"]

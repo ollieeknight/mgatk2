@@ -134,7 +134,7 @@ class CellProcessor:
                             for r in batch_results:
                                 incremental_writer.write_cell(r)
                     except Exception as e:
-                        logger.error(f"Batch {i+1} failed: {e}, falling back to sequential")
+                        logger.error(f"Batch {i + 1} failed: {e}, falling back to sequential")
                         pbar.close()
                         return self.process_cells_direct(reads_by_barcode, incremental_writer)
 

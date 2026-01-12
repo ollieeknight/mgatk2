@@ -118,7 +118,7 @@ def call(input_dir, output_dir, mito_genome, ncores, mode, verbose, dry_run, spl
             pipeline_args = {
                 "bam_path": str(bam_file),
                 "output_dir": str(sample_output),
-                "barcode_file": None,  # Process all reads (bulk mode)
+                "barcode_file": None,  # Auto-extract barcodes from BAM
                 "barcode_tag": "CB",
                 "mito_genome": mito_chr,
                 "ncores": ncores,

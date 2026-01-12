@@ -104,7 +104,7 @@ def test(
 ):
     """Test run with random subsample of reads.
 
-    If no barcode file is provided with -b/--barcodes, performs bulk calling on all reads.
+    If no barcode file is provided, automatically extracts barcodes from the BAM file.
     """
     if verbose:
         logging.basicConfig(level=logging.DEBUG)

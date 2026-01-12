@@ -43,7 +43,9 @@ def save_mgatk_outputs(
     coverage_data = []
 
     # Track reference allele by counting most common base at each position
-    position_base_counts: dict[int, dict[str, int]] = defaultdict(lambda: {"A": 0, "C": 0, "G": 0, "T": 0})
+    position_base_counts: dict[int, dict[str, int]] = defaultdict(
+        lambda: {"A": 0, "C": 0, "G": 0, "T": 0}
+    )
 
     # Track depth per cell
     cell_depths = {}

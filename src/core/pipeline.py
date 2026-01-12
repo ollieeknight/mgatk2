@@ -128,25 +128,37 @@ class MtDNAPipeline:
 
         gc.collect()
 
-        if self.barcode_metadata is not None and self.output_format == "hdf5":
+        if self.output_format == "hdf5":
             logger.info("Generating HTML QC report...")
             try:
-                from analysis.report import generate_html_report
+                if self.barcode_metadata is not None:
+                    # scATAC-seq: use ATAC report with Tn5 transposition plot
+                    from analysis.report import generate_html_report
 
-                generate_html_report(
-                    self.output_dir,
-                    self.sample_name,
-                    title=self.report_title,
-                    subtitle=self.report_subtitle,
-                    working_directory=self.working_directory,
-                    input_dir=str(self.bam_path.parent),
-                )
+                    generate_html_report(
+                        self.output_dir,
+                        self.sample_name,
+                        title=self.report_title,
+                        subtitle=self.report_subtitle,
+                        working_directory=self.working_directory,
+                        input_dir=str(self.bam_path.parent),
+                    )
+                else:
+                    # scRNA-seq: use RNA report with read start sites plot
+                    from analysis.report import generate_scrna_html_report
+
+                    generate_scrna_html_report(
+                        self.output_dir,
+                        self.sample_name,
+                        title=self.report_title,
+                        subtitle=self.report_subtitle,
+                        working_directory=self.working_directory,
+                        input_dir=str(self.bam_path.parent),
+                    )
             except ImportError:
                 logger.warning("matplotlib not installed, skipping HTML report generation")
             except Exception as e:
                 logger.warning("Failed to generate HTML report: %s", e)
-        else:
-            logger.info("Skipping HTML report generation (requires singlecell.csv metadata")
 
         elapsed = time.time() - start_time
         hours = int(elapsed // 3600)
@@ -197,9 +209,17 @@ def run_pipeline(
     barcode_metadata = None
 
     if barcode_file is None:
-        # Bulk calling mode - process all reads without barcode filtering
-        logger.info("Running in bulk calling mode (no barcode filtering)")
-        barcodes = ["bulk"]  # Single pseudo-barcode for bulk analysis
+        from file_io.barcode_extraction import extract_barcodes_from_bam
+
+        logger.info("No barcode file provided - extracting barcodes from BAM")
+        barcodes = extract_barcodes_from_bam(
+            bam_path, barcode_tag=barcode_tag, mito_chr=mito_chr, min_reads=min_reads_per_cell
+        )
+        if not barcodes:
+            raise InvalidInputError(
+                f"No barcodes found in BAM file with tag '{barcode_tag}' "
+                f"and minimum {min_reads_per_cell} reads"
+            )
     elif barcode_file.endswith(".csv"):
         from utils.utils import load_singlecell_csv
 

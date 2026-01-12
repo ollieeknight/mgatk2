@@ -31,9 +31,9 @@ def tenx(
     - No quality filtering (base_qual=0, mapq=0)
     - Alignment-based deduplication only (no fragment length)
     - Text output format
-    - Batch size optimized for 10x data
+    - Batch size optimised for 10x data
 
-    If no barcode file is provided with -b/--barcodes, performs bulk calling on all reads.
+    If no barcode file is provided, automatically extracts barcodes from the BAM file.
     """
     run_pipeline_command(
         bam_path=bam_path,
