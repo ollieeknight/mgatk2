@@ -70,22 +70,32 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
             mt_chrom = get_mt_chrom_name(genome_normalized)
         logger.info("MT chromosome:          %s", mt_chrom)
         logger.info("Input FASTA:            %s", Path(input_fasta).resolve())
+        logger.info("  Compressed:           %s", str(input_fasta).endswith(".gz"))
         logger.info("Output FASTA:           %s", Path(output_fasta).resolve())
+        logger.info("Mask NUMTs:             %s", mask_numts)
 
         # Load blacklist regions
         numt_regions = None
         if mask_numts:
             numt_regions = load_blacklist_regions(blacklist_path)
+            logger.info("Loaded %s NUMT regions to mask", len(numt_regions))
 
         # Perform masking
-        logger.info("Masking genome...")
-        mask_fasta(
+        logger.info("Masking genome (this may take 1-2 minutes)...")
+        stats = mask_fasta(
             input_fasta=Path(input_fasta),
             output_fasta=Path(output_fasta),
             numt_regions=numt_regions,
             mt_chrom=mt_chrom,
             mt_blacklist_positions=None,
         )
+
+        # Log results
+        logger.info("✓ Masking complete!")
+        logger.info("  Chromosomes:          %s", stats["chromosomes_processed"])
+        logger.info("  NUMT regions masked:  %s", stats["numt_regions_masked"])
+        logger.info("  NUMT bases masked:    %s", f"{stats['numt_bases_masked']:,}")
+        logger.info("  Output size:          %.1f GB", stats["total_output_size"] / 1e9)
 
     except ValueError as e:
         logger.error("Error: %s", e)

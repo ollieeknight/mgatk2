@@ -2,6 +2,7 @@
 FASTA masking utilities for creating hard-masked reference genomes.
 """
 
+import gzip
 import logging
 from pathlib import Path
 
@@ -32,7 +33,11 @@ def mask_fasta(
                 numt_mask[chrom] = []
             numt_mask[chrom].append((start, end))
 
-    with open(input_fasta) as f_in, open(output_fasta, "w") as f_out:
+    # Handle both gzipped and uncompressed FASTA files
+    open_func = gzip.open if str(input_fasta).endswith(".gz") else open
+    mode = "rt" if str(input_fasta).endswith(".gz") else "r"
+
+    with open_func(input_fasta, mode) as f_in, open(output_fasta, "w") as f_out:
         current_chrom = None
         sequence: list[str] = []
 
