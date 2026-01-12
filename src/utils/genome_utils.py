@@ -41,31 +41,31 @@ MT_CHROM_NAMES = {
 }
 
 
-def normalize_genome_name(genome: str) -> str:
+def normalise_genome_name(genome: str) -> str:
     """Normalise genome name to canonical form"""
-    normalized = GENOME_ALIASES.get(genome.lower())
-    if normalized is None:
+    normalised = GENOME_ALIASES.get(genome.lower())
+    if normalised is None:
         supported = ", ".join(sorted(set(GENOME_ALIASES.keys())))
         raise ValueError(f"Genome '{genome}' not supported. Supported genomes: {supported}")
-    return normalized
+    return normalised
 
 
 def get_reference_path(genome: str, data_dir: Path | None = None) -> Path:
     """Get path to mitochondrial reference FASTA for genome"""
-    normalized = normalize_genome_name(genome)
+    normalised = normalise_genome_name(genome)
 
     if data_dir is None:
         # Use importlib.resources to get package data
         try:
             package_files = files("data.references")
-            ref_path = Path(str(package_files / f"{normalized}_MT.fasta"))
+            ref_path = Path(str(package_files / f"{normalised}_MT.fasta"))
         except (ModuleNotFoundError, TypeError):
             # Fallback for development mode
             ref_path = (
-                Path(__file__).parent.parent / "data" / "references" / f"{normalized}_MT.fasta"
+                Path(__file__).parent.parent / "data" / "references" / f"{normalised}_MT.fasta"
             )
     else:
-        ref_path = data_dir / f"{normalized}_MT.fasta"
+        ref_path = data_dir / f"{normalised}_MT.fasta"
 
     if not ref_path.exists():
         raise FileNotFoundError(
@@ -77,20 +77,20 @@ def get_reference_path(genome: str, data_dir: Path | None = None) -> Path:
 
 def get_blacklist_path(genome: str, data_dir: Path | None = None) -> Path:
     """Get path to NUMT blacklist BED file for genome"""
-    normalized = normalize_genome_name(genome)
+    normalised = normalise_genome_name(genome)
 
     if data_dir is None:
         # Use importlib.resources to get package data
         try:
             package_files = files("data.blacklists")
-            blacklist_path = Path(str(package_files / f"{normalized}_numts.bed"))
+            blacklist_path = Path(str(package_files / f"{normalised}_numts.bed"))
         except (ModuleNotFoundError, TypeError):
             # Fallback for development mode
             blacklist_path = (
-                Path(__file__).parent.parent / "data" / "blacklists" / f"{normalized}_numts.bed"
+                Path(__file__).parent.parent / "data" / "blacklists" / f"{normalised}_numts.bed"
             )
     else:
-        blacklist_path = data_dir / f"{normalized}_numts.bed"
+        blacklist_path = data_dir / f"{normalised}_numts.bed"
 
     if not blacklist_path.exists():
         raise FileNotFoundError(
@@ -102,8 +102,8 @@ def get_blacklist_path(genome: str, data_dir: Path | None = None) -> Path:
 
 def get_mt_chrom_name(genome: str) -> str:
     """Get standard mitochondrial chromosome name for genome"""
-    normalized = normalize_genome_name(genome)
-    return MT_CHROM_NAMES.get(normalized, "chrM")
+    normalised = normalise_genome_name(genome)
+    return MT_CHROM_NAMES.get(normalised, "chrM")
 
 
 def load_blacklist_regions(blacklist_path: Path) -> list:
@@ -154,18 +154,18 @@ def detect_fasta_chr_prefix(fasta_path: Path) -> bool:
     return chr_count > no_chr_count
 
 
-def normalize_bed_chromosomes(regions: list, use_chr_prefix: bool) -> list:
+def normalise_bed_chromosomes(regions: list, use_chr_prefix: bool) -> list:
     """
-    Normalize BED file chromosome names to match FASTA naming convention.
+    Normalise BED file chromosome names to match FASTA naming convention.
     
     Args:
         regions: List of (chrom, start, end) tuples from BED file
         use_chr_prefix: Whether target FASTA uses 'chr' prefix
         
     Returns:
-        List of regions with normalized chromosome names
+        List of regions with normalised chromosome names
     """
-    normalized = []
+    normalised = []
     for chrom, start, end in regions:
         if use_chr_prefix:
             # Add chr prefix if not present
@@ -175,5 +175,5 @@ def normalize_bed_chromosomes(regions: list, use_chr_prefix: bool) -> list:
             # Remove chr prefix if present
             if chrom.startswith("chr"):
                 chrom = chrom[3:]
-        normalized.append((chrom, start, end))
-    return normalized
+        normalised.append((chrom, start, end))
+    return normalised

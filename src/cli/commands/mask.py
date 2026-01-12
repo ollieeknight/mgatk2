@@ -54,17 +54,17 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
             get_blacklist_path,
             get_mt_chrom_name,
             load_blacklist_regions,
-            normalize_bed_chromosomes,
-            normalize_genome_name,
+            normalise_bed_chromosomes,
+            normalise_genome_name,
         )
         from utils.masking import mask_fasta
 
         # Normalise genome name (handles GRCh38 → hg38, etc.)
-        genome_normalized = normalize_genome_name(genome)
-        logger.info("Genome:                 %s → %s", genome, genome_normalized)
+        genome_normalised = normalise_genome_name(genome)
+        logger.info("Genome:                 %s → %s", genome, genome_normalised)
 
         # Get blacklist file
-        blacklist_path = get_blacklist_path(genome_normalized)
+        blacklist_path = get_blacklist_path(genome_normalised)
         logger.info("Blacklist file:         %s", blacklist_path)
 
         # Detect FASTA chromosome naming convention
@@ -73,10 +73,10 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
         logger.info("  Compressed:           %s", str(input_fasta).endswith(".gz"))
         logger.info("  Chr naming:           %s", "chr1, chr2..." if use_chr_prefix else "1, 2...")
 
-        # Get MT chromosome name and normalize it
+        # Get MT chromosome name and normalise it
         if mt_chrom is None:
-            mt_chrom = get_mt_chrom_name(genome_normalized)
-            # Normalize MT chromosome name to match FASTA
+            mt_chrom = get_mt_chrom_name(genome_normalised)
+            # Normalise MT chromosome name to match FASTA
             if not use_chr_prefix and mt_chrom.startswith("chr"):
                 mt_chrom = mt_chrom[3:]
             elif use_chr_prefix and not mt_chrom.startswith("chr"):
@@ -85,15 +85,15 @@ def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verb
         logger.info("Output FASTA:           %s", Path(output_fasta).resolve())
         logger.info("Mask NUMTs:             %s", mask_numts)
 
-        # Load and normalize blacklist regions
+        # Load and normalise blacklist regions
         numt_regions = None
         if mask_numts:
             numt_regions = load_blacklist_regions(blacklist_path)
-            numt_regions = normalize_bed_chromosomes(numt_regions, use_chr_prefix)
+            numt_regions = normalise_bed_chromosomes(numt_regions, use_chr_prefix)
             logger.info("Loaded %s NUMT regions to mask", len(numt_regions))
             if verbose:
                 logger.debug(
-                    "Sample normalized regions: %s",
+                    "Sample normalised regions: %s",
                     numt_regions[:3] if len(numt_regions) >= 3 else numt_regions,
                 )
 

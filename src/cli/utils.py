@@ -73,8 +73,8 @@ def _find_barcode_file(directory: Path) -> str | None:
     return None
 
 
-def normalize_mito_chr(mito_genome: str) -> str:
-    """Normalize mitochondrial chromosome name"""
+def normalise_mito_chr(mito_genome: str) -> str:
+    """Normalise mitochondrial chromosome name"""
     if mito_genome.upper() in ["M", "MT"]:
         return "chrM"
     if mito_genome in ["chrM", "chrMT"]:
@@ -191,7 +191,7 @@ def run_pipeline_command(
 
         os.makedirs(output_dir, exist_ok=True)
 
-        mito_chr = normalize_mito_chr(mito_genome)
+        mito_chr = normalise_mito_chr(mito_genome)
 
         # Barcode file will be auto-extracted in run_pipeline if None
         if barcode_file is None:
