@@ -32,7 +32,7 @@ where = ["src"]
 include = ["*"]
 
 [tool.setuptools.package-data]
-"*" = ["data/blacklists/*.bed", "data/references/*.fasta"]
+data = ["blacklists/*.bed", "references/*.fasta"]
 
 [tool.black]
 line-length = 100
