@@ -45,31 +45,6 @@ def normalise_genome_name(genome: str) -> str:
     return normalised
 
 
-def get_reference_path(genome: str, data_dir: Path | None = None) -> Path:
-    """Get path to mitochondrial reference FASTA for genome"""
-    normalised = normalise_genome_name(genome)
-
-    if data_dir is None:
-        # Use importlib.resources to get package data
-        try:
-            package_files = files("data.references")
-            ref_path = Path(str(package_files / f"{normalised}_MT.fasta"))
-        except (ModuleNotFoundError, TypeError):
-            # Fallback for development mode
-            ref_path = (
-                Path(__file__).parent.parent / "data" / "references" / f"{normalised}_MT.fasta"
-            )
-    else:
-        ref_path = data_dir / f"{normalised}_MT.fasta"
-
-    if not ref_path.exists():
-        raise FileNotFoundError(
-            f"Reference file not found: {ref_path}\nExpected location: {ref_path}"
-        )
-
-    return ref_path
-
-
 def get_blacklist_path(genome: str, data_dir: Path | None = None) -> Path:
     """Get path to NUMT blacklist BED file for genome"""
     normalised = normalise_genome_name(genome)

@@ -1,1 +1,1 @@
-"""Blacklist files for NUMT regions."""
+"""Blacklist files for NUMT regions"""
