@@ -41,7 +41,14 @@ logger = logging.getLogger(__name__)
     show_default=True,
     help="Mask NUMT regions in nuclear chromosomes (recommended)",
 )
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    show_default="off",
+    help="Enable verbose logging",
+)
 def hardmask_fasta(input_fasta, output_fasta, genome, mt_chrom, mask_numts, verbose):
     """Hard-mask reference genome FASTA with blacklists"""
     if verbose:

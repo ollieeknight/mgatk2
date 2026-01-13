@@ -80,7 +80,9 @@ def common_options(f):
         "--memory",
         "-m",
         "max_memory",
+        default=128,
         type=float,
+        show_default=True,
         help="Maximum memory usage in GB",
     )(f)
     f = click.option(
@@ -91,21 +93,30 @@ def common_options(f):
         show_default=True,
         help="Number of cells to process per batch",
     )(f)
-    f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
+    f = click.option(
+        "--verbose",
+        "-v",
+        is_flag=True,
+        default=True,
+        show_default="on",
+        help="Enable verbose logging",
+    )(f)
     f = click.option(
         "--threads",
         "-t",
         "ncores",
-        default=None,
+        default=16,
         type=int,
+        show_default=True,
         help="Number of threads for parallel processing",
     )(f)
     f = click.option(
         "--output",
         "-o",
         "output_dir",
-        default="mgatk2",
+        default="mgatk2/",
         type=click.Path(),
+        show_default=True,
         help="Output directory for analysis results",
     )(f)
     f = click.option(
@@ -364,24 +375,35 @@ def call_options(f):
         "--memory",
         "-m",
         "max_memory",
+        default=128,
         type=float,
+        show_default=True,
         help="Maximum memory usage in GB",
     )(f)
-    f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
+    f = click.option(
+        "--verbose",
+        "-v",
+        is_flag=True,
+        default=True,
+        show_default="on",
+        help="Enable verbose logging",
+    )(f)
     f = click.option(
         "--threads",
         "-t",
         "ncores",
-        default=None,
+        default=16,
         type=int,
+        show_default=True,
         help="Number of threads for parallel processing",
     )(f)
     f = click.option(
         "--output",
         "-o",
         "output_dir",
-        default="mgatk2",
+        default="mgatk2/",
         type=click.Path(),
+        show_default=True,
         help="Output directory for analysis results",
     )(f)
     f = click.option(

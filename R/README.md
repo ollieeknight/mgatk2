@@ -66,4 +66,4 @@ Contains metadata and summary information:
   - `passed_filters`: Fragments passing QC filters
   - `peak_region_fragments`: Fragments in peaks
   - `TSS_fragments`: Fragments at TSS regions
-  - Additional 10x ATAC-seq QC metrics
+  - Additional 10x ATAC-seq QC metrics as defined in singlecell.csv

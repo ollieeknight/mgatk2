@@ -1,4 +1,4 @@
-"""Base CLI setup for mgatk2."""
+"""Base CLI setup for mgatk2"""
 
 from importlib.metadata import version
 
@@ -6,11 +6,19 @@ import click
 
 
 class OrderedGroup(click.Group):
-    """Click group that preserves command order in help text."""
+    """Click group that preserves command order in help text"""
 
     def list_commands(self, ctx):
         """Return commands in the order they were added."""
         return list(self.commands)
+
+    def format_usage(self, ctx, formatter):
+        """Override to hide the usage line for main command only."""
+        # Only hide usage for the main 'mgatk2' command, not subcommands
+        if ctx.parent is not None:
+            # This is a subcommand, show normal usage
+            super().format_usage(ctx, formatter)
+        # For main command (ctx.parent is None), do nothing to hide usage
 
     def format_commands(self, ctx, formatter):
         """Format commands in the order they were added, not alphabetically."""
@@ -38,9 +46,10 @@ class OrderedGroup(click.Group):
 @click.group(cls=OrderedGroup)
 @click.version_option(version=version("mgatk2"))
 def cli():
-    """\b
+    """
     mgatk2: An improved mitochondrial genome analysis toolkit,
-    inspired by Caleb Lareau's mgatk for 10x single-cell ATAC-seq data"""
+    inspired by Caleb Lareau's mgatk for 10x single-cell ATAC-seq data
+    """
 
 
 def main():

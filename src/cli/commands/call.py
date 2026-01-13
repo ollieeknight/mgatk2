@@ -32,7 +32,7 @@ def call(
     output_format,
     dry_run,
 ):
-    """Bulk analysis of BAM files (Smart-seq style, one BAM per cell)"""
+    """Run mgatk2 and treat each bam file as a single cell"""
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
@@ -101,7 +101,7 @@ def call(
             )
             logger.info("Completed: %s", sample_name)
 
-        logger.info("Analysis completed for all %s BAM files!", len(bam_files))
+        logger.info("Analysis completed for all %s BAM files", len(bam_files))
 
     except KeyboardInterrupt:
         logger.info("Bulk analysis interrupted by user")
