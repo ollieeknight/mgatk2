@@ -173,11 +173,11 @@ class BAMReader:
                 if self.config.dedup.use_fragment_length
                 else duplicate_reads_position_only
             )
-        logger.info(
-            "%s duplicate reads removed (%.1f%%)",
-            f"{duplicates_removed:,}",
-            duplicates_removed / total_reads * 100,
-        )
+            logger.info(
+                "%d duplicate reads removed (%.1f%%)",
+                duplicates_removed,
+                duplicates_removed / total_reads * 100,
+            )
 
         logger.info(
             (

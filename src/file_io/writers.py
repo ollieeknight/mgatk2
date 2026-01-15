@@ -1,7 +1,6 @@
 """Writers module for mgatk2 output formats."""
 
 import errno
-import gzip
 import json
 import logging
 import shutil
@@ -11,6 +10,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pgzip
 
 from core.config import PipelineConfig
 
@@ -468,19 +468,28 @@ class IncrementalTextWriter:
             f.close()
         self.coverage_file.close()
 
-        logger.info("Compressing output files...")
+        # Use parallel gzip compression with same settings as standard gzip
+        n_threads = self.config.performance.n_cores
+        logger.info(
+            "Compressing output .txt files...",
+            n_threads,
+        )
         for base in ["A", "C", "G", "T"]:
             txt_file = self.output_dir / f"{base}.txt"
             gz_file = self.output_dir / f"output.{base}.txt.gz"
             with open(txt_file, "rb") as f_in:
-                with gzip.open(gz_file, "wb") as f_out:
+                with pgzip.open(
+                    gz_file, "wb", thread=n_threads, compresslevel=9, blocksize=2 * 10**8
+                ) as f_out:
                     shutil.copyfileobj(f_in, f_out)
             txt_file.unlink()
 
         txt_file = self.output_dir / "coverage.txt"
         gz_file = self.output_dir / "output.coverage.txt.gz"
         with open(txt_file, "rb") as f_in:
-            with gzip.open(gz_file, "wb") as f_out:
+            with pgzip.open(
+                gz_file, "wb", thread=n_threads, compresslevel=9, blocksize=2 * 10**8
+            ) as f_out:
                 shutil.copyfileobj(f_in, f_out)
         txt_file.unlink()
 
