@@ -1,22 +1,24 @@
 .PHONY: setup format lint check test clean
 
-setup:
+install:
 	python3 -m venv .venv
 	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e .
-	.venv/bin/pip install ruff mypy isort black flake8
+	.venv/bin/pip install -e . ruff mypy isort black flake8
 
 format:
-	isort src/
-	black src/
+	.venv/bin/isort src/
+	.venv/bin/black src/
 
 lint:
-	ruff check --fix src/
+	.venv/bin/ruff check --fix src/
 
 check: format lint
 
-test:
+run:
 	cd tests && ../.venv/bin/mgatk2 run -o run_output
+
+tenx:
+	cd tests && ../.venv/bin/mgatk2 tenx -o tenx_output
 
 clean:
 	rm -rf build dist *.egg-info
@@ -24,3 +26,4 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type d -name *.egg-info -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+	find . -type f -name ".DS_Store" -delete

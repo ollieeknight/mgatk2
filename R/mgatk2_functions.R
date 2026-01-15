@@ -1,10 +1,22 @@
-read_mgatk_hdf5 <- function(output_dir) {
-
-  counts_file <- file.path(output_dir, "output", "counts.h5")
-  metadata_file <- file.path(output_dir, "output", "metadata.h5")
+read_mgatk_hdf5 <- function(mgatk_output_dir) {
   
-  counts_h5 <- H5File$new(counts_file, mode = "r")
-  metadata_h5 <- H5File$new(metadata_file, mode = "r")
+  if (!requireNamespace("hdf5r", quietly = TRUE)) {
+    stop("Package 'hdf5r' is required. Install with: install.packages('hdf5r')")
+  }
+
+  counts_file <- file.path(mgatk_output_dir, "output", "counts.h5")
+  metadata_file <- file.path(mgatk_output_dir, "output", "metadata.h5")
+  
+  if (!file.exists(counts_file)) {
+    stop("Counts file not found: ", counts_file)
+  }
+  
+  if (!file.exists(metadata_file)) {
+    stop("Metadata file not found: ", metadata_file)
+  }
+  
+  counts_h5 <- hdf5r::H5File$new(counts_file, mode = "r")
+  metadata_h5 <- hdf5r::H5File$new(metadata_file, mode = "r")
   
   barcodes <- counts_h5[["barcode"]][]
   
@@ -123,6 +135,47 @@ subset_mgatk_barcodes <- function(mgatk_data, barcodes) {
   return(result)
 }
 
+filter_cells_by_coverage <- function(mgatk_data, 
+                                      min_mean_coverage = 10, 
+                                      min_coverage_breadth = 0.5,
+                                      cell_coverage_stats = NULL) {
+  
+  if (is.null(cell_coverage_stats)) {
+    cell_coverage_stats <- calculate_cell_coverage_stats(mgatk_data)
+  }
+  
+  cells_pass <- cell_coverage_stats %>%
+    filter(mean_coverage >= min_mean_coverage,
+           coverage_breadth >= min_coverage_breadth) %>%
+    pull(barcode)
+  
+  keep_idx <- which(mgatk_data$barcodes %in% cells_pass)
+  
+  counts_filtered <- lapply(mgatk_data$counts, function(mat) {
+    if (!is.null(mat)) mat[keep_idx, , drop = FALSE] else NULL
+  })
+  
+  barcode_metadata_filtered <- NULL
+  if (!is.null(mgatk_data$barcode_metadata)) {
+    barcode_metadata_filtered <- mgatk_data$barcode_metadata[keep_idx, ]
+  }
+  
+  message("Kept ", length(keep_idx), " / ", length(mgatk_data$barcodes), " cells")
+  
+  list(
+    counts = counts_filtered,
+    mean_depth = mgatk_data$mean_depth[keep_idx],
+    median_depth = mgatk_data$median_depth[keep_idx],
+    max_depth = mgatk_data$max_depth[keep_idx],
+    genome_coverage = mgatk_data$genome_coverage[keep_idx],
+    total_bases = mgatk_data$total_bases[keep_idx],
+    refallele = mgatk_data$refallele,
+    positions = mgatk_data$positions,
+    barcodes = mgatk_data$barcodes[keep_idx],
+    barcode_metadata = barcode_metadata_filtered
+  )
+}
+
 calculate_cell_coverage_stats <- function(mgatk_data) {
   coverage_matrix <- mgatk_data$counts$coverage
   
@@ -139,63 +192,6 @@ calculate_cell_coverage_stats <- function(mgatk_data) {
   )
   
   return(cell_stats)
-}
-
-filter_cells_by_coverage <- function(mgatk_data, 
-                                     min_mean_coverage = 10, 
-                                     min_coverage_breadth = 0.5,
-                                     cell_coverage_stats = NULL) {
-    
-    # Calculate coverage stats if not provided (avoids redundant calculation)
-    if (is.null(cell_coverage_stats)) {
-        cell_coverage_stats <- calculate_cell_coverage_stats(mgatk_data)
-    }
-    
-    # Identify cells passing filters
-    cells_pass <- cell_coverage_stats %>%
-        filter(mean_coverage >= min_mean_coverage,
-               coverage_breadth >= min_coverage_breadth) %>%
-        pull(barcode)
-    
-    # Get indices of passing cells
-    cell_indices <- which(mgatk_data$barcodes %in% cells_pass)
-    
-    # Subset ALL count matrices (preserving all strand-specific and tn5 data)
-    counts_filtered <- lapply(mgatk_data$counts, function(mat) {
-        if (!is.null(mat)) {
-            mat[cell_indices, , drop = FALSE]
-        } else {
-            NULL
-        }
-    })
-    
-    # Subset barcode metadata if it exists
-    barcode_metadata_filtered <- NULL
-    if (!is.null(mgatk_data$barcode_metadata)) {
-        barcode_metadata_filtered <- mgatk_data$barcode_metadata[cell_indices, ]
-    }
-    
-    # Preserve ALL fields from original mgatk_data structure
-    mgatk_filtered <- list(
-        counts = counts_filtered,
-        mean_depth = mgatk_data$mean_depth[cell_indices],
-        median_depth = mgatk_data$median_depth[cell_indices],
-        max_depth = mgatk_data$max_depth[cell_indices],
-        genome_coverage = mgatk_data$genome_coverage[cell_indices],
-        total_bases = mgatk_data$total_bases[cell_indices],
-        refallele = mgatk_data$refallele,
-        positions = mgatk_data$positions,
-        barcodes = mgatk_data$barcodes[cell_indices],
-        barcode_metadata = barcode_metadata_filtered
-    )
-    
-    message(sprintf("Filtered %d cells",
-                    length(cell_indices), 
-                    100 * length(cell_indices) / length(mgatk_data$barcodes),
-                    min_mean_coverage, 
-                    min_coverage_breadth))
-    
-    return(mgatk_filtered)
 }
 
 calculate_position_coverage_stats <- function(mgatk_data) {
@@ -216,235 +212,161 @@ calculate_position_coverage_stats <- function(mgatk_data) {
   return(position_stats)
 }
 
-calculate_transposition_stats <- function(mgatk_data) {
-  tn5_cuts_fwd <- mgatk_data$counts$tn5_cuts_fwd
-  tn5_cuts_rev <- mgatk_data$counts$tn5_cuts_rev
-  coverage <- mgatk_data$counts$coverage
-  
-  if (is.null(tn5_cuts_fwd) || is.null(tn5_cuts_rev)) {
-    return(tibble(
-      position = integer(),
-      tn5_cuts_total = integer(),
-      tn5_cuts_fwd = integer(),
-      tn5_cuts_rev = integer(),
-      total_bases = integer(),
-      tn5_frequency = numeric(),
-      cells_with_tn5_cuts = integer(),
-      mean_tn5_cuts_per_cell = numeric(),
-      strand_bias = numeric()
-    ))
-  }
-  
-  total_tn5_cuts <- tn5_cuts_fwd + tn5_cuts_rev
-  
-  transposition_stats <- tibble(
-    position = mgatk_data$positions,
-    tn5_cuts_total = colSums(total_tn5_cuts, na.rm = TRUE),
-    tn5_cuts_fwd = colSums(tn5_cuts_fwd, na.rm = TRUE),
-    tn5_cuts_rev = colSums(tn5_cuts_rev, na.rm = TRUE),
-    total_bases = colSums(coverage, na.rm = TRUE),
-    tn5_frequency = ifelse(colSums(coverage, na.rm = TRUE) > 0, 
-                           colSums(total_tn5_cuts, na.rm = TRUE) / colSums(coverage, na.rm = TRUE), 0),
-    cells_with_tn5_cuts = apply(total_tn5_cuts > 0, 2, sum),
-    mean_tn5_cuts_per_cell = colMeans(total_tn5_cuts, na.rm = TRUE)
-  ) %>%
-    mutate(
-      strand_bias = ifelse(tn5_cuts_fwd + tn5_cuts_rev > 0, 
-                           abs(tn5_cuts_fwd - tn5_cuts_rev) / (tn5_cuts_fwd + tn5_cuts_rev), 0)
-    )
-  
-  return(transposition_stats)
-}
-
-identify_variants <- function(mgatk_data, min_cells = 0, min_strand_cor = 0, min_vmr = 0, 
-                              stabilize_variance = FALSE, low_coverage_threshold = 10) {
-  positions <- mgatk_data$positions
-  refallele <- mgatk_data$refallele
-  barcodes <- mgatk_data$barcodes
-  n_cells <- length(barcodes)
-  n_positions <- length(positions)
-  
-  if (min_cells > 0) message("  Minimum cells: ", min_cells)
-  if (min_strand_cor > 0) message("  Minimum strand correlation: ", min_strand_cor)
-  if (min_vmr > 0) message("  Minimum VMR: ", min_vmr)
+recompute_reference_alleles <- function(mgatk_data) {
   
   bases <- c("A", "C", "G", "T")
-  results_list <- list()
+  old_ref <- mgatk_data$refallele
+  new_ref <- character(length(mgatk_data$positions))
   
-  coverage <- mgatk_data$counts$coverage
-  
-  for (base in bases) {
-    fwd <- mgatk_data$counts[[paste0(base, "_fwd")]]
-    rev <- mgatk_data$counts[[paste0(base, "_rev")]]
-    
-    is_ref <- refallele == base
-    alt_positions <- which(!is_ref)
-    
-    for (pos_idx in alt_positions) {
-      pos <- positions[pos_idx]
-      ref_base <- refallele[pos_idx]
-      
-      fwd_counts <- fwd[, pos_idx]
-      rev_counts <- rev[, pos_idx]
-      cov <- coverage[, pos_idx]
-      
-      total_counts <- fwd_counts + rev_counts
-      af <- ifelse(cov > 0, total_counts / cov, 0)
-      
-      cells_detected <- sum(total_counts > 0)
-      cells_confident <- sum(fwd_counts >= 2 & rev_counts >= 2)
-      
-      if (cells_confident < min_cells) next
-      
-      bulk_af <- sum(total_counts) / sum(cov)
-      if (is.na(bulk_af) || is.nan(bulk_af)) next
-      
-      fwd_idx <- which(fwd_counts > 0)
-      if (length(fwd_idx) > 1) {
-        strand_cor <- cor(fwd_counts[fwd_idx], rev_counts[fwd_idx], 
-                          method = "pearson", use = "complete.obs")
-      } else {
-        strand_cor <- 0
-      }
-      if (is.na(strand_cor)) strand_cor <- 0
-      
-      if (stabilize_variance) {
-        af_stabilized <- af
-        low_cov_idx <- which(cov < low_coverage_threshold)
-        af_stabilized[low_cov_idx] <- bulk_af
-        var_af <- var(af_stabilized)
-      } else {
-        var_af <- var(af)
-      }
-      vmr <- var_af / bulk_af
-      
-      results_list[[length(results_list) + 1]] <- tibble(
-        position = pos,
-        nucleotide = paste0(ref_base, ">", base),
-        variant = paste0(pos, ref_base, ">", base),
-        mean = bulk_af,
-        vmr = vmr,
-        n_cells_detected = cells_detected,
-        n_cells_conf_detected = cells_confident,
-        strand_correlation = strand_cor
-      )
-    }
+  for (i in seq_along(mgatk_data$positions)) {
+    base_totals <- sapply(bases, function(base) {
+      sum(mgatk_data$counts[[paste0(base, "_fwd")]][, i] + 
+          mgatk_data$counts[[paste0(base, "_rev")]][, i])
+    })
+    new_ref[i] <- bases[which.max(base_totals)]
   }
   
-  if (length(results_list) == 0) {
-    return(tibble(
-      position = integer(),
-      nucleotide = character(),
-      variant = character(),
-      mean = numeric(),
-      vmr = numeric(),
-      n_cells_detected = integer(),
-      n_cells_conf_detected = integer(),
-      strand_correlation = numeric()
-    ))
-  }
+  n_changed <- sum(old_ref != new_ref)
+  message("Updated ", n_changed, " reference alleles")
   
-  all_variants <- bind_rows(results_list)
-  
-  filtered_variants <- all_variants %>%
-    filter(
-      n_cells_conf_detected >= min_cells,
-      strand_correlation >= min_strand_cor,
-      vmr > min_vmr
-    ) %>%
-    arrange(desc(vmr))
-  
-  return(filtered_variants)
-}
-
-calculate_allele_freq <- function(mgatk_data, variants, min_coverage = 1) {
-  
-  positions <- mgatk_data$positions
-  barcodes <- mgatk_data$barcodes
-  n_cells <- length(barcodes)
-  
-  if (nrow(variants) == 0) {
-    empty_matrix <- matrix(0, nrow = 0, ncol = n_cells)
-    empty_matrix <- as(empty_matrix, "dgCMatrix")
-    colnames(empty_matrix) <- barcodes
-    return(empty_matrix)
-  }
-  
-  
-  valid_variants_idx <- c()
-  for (i in seq_len(nrow(variants))) {
-    var <- variants$variant[i]
-    parts <- str_match(var, "(\\d+)([ACGT])>([ACGT])")
-    pos <- as.numeric(parts[2])
-    
-    pos_idx <- which(positions == pos)
-    if (length(pos_idx) > 0) {
-      valid_variants_idx <- c(valid_variants_idx, i)
-    }
-  }
-  
-  if (length(valid_variants_idx) == 0) {
-    empty_matrix <- matrix(0, nrow = 0, ncol = n_cells)
-    empty_matrix <- as(empty_matrix, "dgCMatrix")
-    colnames(empty_matrix) <- barcodes
-    return(empty_matrix)
-  }
-  
-  variants_valid <- variants[valid_variants_idx, ]
-  n_valid_variants <- nrow(variants_valid)
-  
-  variant_names <- gsub(">", "-", variants_valid$variant)
-  
-  allele_freq <- matrix(0, nrow = n_valid_variants, ncol = n_cells)
-  allele_freq <- as(allele_freq, "dgCMatrix")
-  rownames(allele_freq) <- variant_names
-  colnames(allele_freq) <- barcodes
-  
-  for (i in seq_len(n_valid_variants)) {
-    var <- variants_valid$variant[i]
-    parts <- str_match(var, "(\\d+)([ACGT])>([ACGT])")
-    pos <- as.numeric(parts[2])
-    alt_base <- parts[4]
-    
-    pos_idx <- which(positions == pos)
-    
-    fwd <- mgatk_data$counts[[paste0(alt_base, "_fwd")]][, pos_idx]
-    rev <- mgatk_data$counts[[paste0(alt_base, "_rev")]][, pos_idx]
-    cov <- mgatk_data$counts$coverage[, pos_idx]
-    
-    total_alt <- fwd + rev
-    
-    af <- ifelse(cov >= min_coverage, total_alt / cov, 0)
-    
-    allele_freq[i, ] <- af
-  }
-  
-  return(allele_freq)
+  mgatk_data$refallele <- new_ref
+  mgatk_data
 }
 
 calculate_strand_coverage_stats <- function(mgatk_data) {
-  # Calculate coverage separately for forward (H-strand) and reverse (L-strand)
-  # Forward reads map to the heavy strand, reverse reads to the light strand
   
-  # Get all base counts for each strand
   fwd_coverage <- mgatk_data$counts$A_fwd + mgatk_data$counts$C_fwd + 
                   mgatk_data$counts$G_fwd + mgatk_data$counts$T_fwd
   
   rev_coverage <- mgatk_data$counts$A_rev + mgatk_data$counts$C_rev + 
                   mgatk_data$counts$G_rev + mgatk_data$counts$T_rev
   
-  strand_stats <- tibble(
+  tibble(
     position = mgatk_data$positions,
-    mean_fwd_coverage = colMeans(fwd_coverage, na.rm = TRUE),
-    mean_rev_coverage = colMeans(rev_coverage, na.rm = TRUE),
-    total_coverage = colMeans(mgatk_data$counts$coverage, na.rm = TRUE)
+    mean_fwd_coverage = colMeans(fwd_coverage),
+    mean_rev_coverage = colMeans(rev_coverage),
+    total_coverage = colMeans(mgatk_data$counts$coverage)
   ) %>%
     mutate(
-      strand_balance = ifelse(total_coverage > 0, 
-                             mean_fwd_coverage / total_coverage, 
-                             0.5),
+      strand_balance = mean_fwd_coverage / pmax(total_coverage, 1),
       strand_imbalance = abs(mean_fwd_coverage - mean_rev_coverage)
     )
+}
+
+calculate_transposition_stats <- function(mgatk_data) {
   
-  return(strand_stats)
+  if (is.null(mgatk_data$counts$tn5_cuts_fwd) || is.null(mgatk_data$counts$tn5_cuts_rev)) {
+    return(tibble())
+  }
+  
+  tn5_fwd <- mgatk_data$counts$tn5_cuts_fwd
+  tn5_rev <- mgatk_data$counts$tn5_cuts_rev
+  tn5_total <- tn5_fwd + tn5_rev
+  cov <- mgatk_data$counts$coverage
+  
+  total_bases <- colSums(cov)
+  
+  tibble(
+    position = mgatk_data$positions,
+    tn5_cuts_total = colSums(tn5_total),
+    tn5_cuts_fwd = colSums(tn5_fwd),
+    tn5_cuts_rev = colSums(tn5_rev),
+    total_bases = total_bases,
+    tn5_frequency = ifelse(total_bases > 0, colSums(tn5_total) / total_bases, 0),
+    cells_with_tn5_cuts = colSums(tn5_total > 0),
+    mean_tn5_cuts_per_cell = colMeans(tn5_total),
+    strand_bias = abs(tn5_cuts_fwd - tn5_cuts_rev) / pmax(tn5_cuts_fwd + tn5_cuts_rev, 1)
+  )
+}
+
+identify_variants <- function(mgatk_data, min_cells = 0, min_strand_cor = 0, min_vmr = 0, 
+                              stabilize_variance = FALSE, low_coverage_threshold = 10) {
+  
+  bases <- c("A", "C", "G", "T")
+  results <- list()
+  coverage <- mgatk_data$counts$coverage
+  
+  for (base in bases) {
+    fwd <- mgatk_data$counts[[paste0(base, "_fwd")]]
+    rev <- mgatk_data$counts[[paste0(base, "_rev")]]
+    
+    alt_pos <- which(mgatk_data$refallele != base)
+    
+    for (i in alt_pos) {
+      fwd_counts <- fwd[, i]
+      rev_counts <- rev[, i]
+      cov <- coverage[, i]
+      total <- fwd_counts + rev_counts
+      
+      cells_conf <- sum(fwd_counts >= 2 & rev_counts >= 2)
+      if (cells_conf < min_cells) next
+      
+      bulk_af <- sum(total) / sum(cov)
+      if (is.na(bulk_af)) next
+      
+      fwd_idx <- fwd_counts > 0
+      strand_cor <- if (sum(fwd_idx) > 1) {
+        cor(fwd_counts[fwd_idx], rev_counts[fwd_idx], use = "complete.obs")
+      } else 0
+      strand_cor[is.na(strand_cor)] <- 0
+      
+      af <- ifelse(cov > 0, total / cov, 0)
+      if (stabilize_variance) {
+        af[cov < low_coverage_threshold] <- bulk_af
+      }
+      vmr <- var(af) / bulk_af
+      
+      results[[length(results) + 1]] <- tibble(
+        position = mgatk_data$positions[i],
+        nucleotide = paste0(mgatk_data$refallele[i], ">", base),
+        variant = paste0(mgatk_data$positions[i], mgatk_data$refallele[i], ">", base),
+        mean = bulk_af,
+        vmr = vmr,
+        n_cells_detected = sum(total > 0),
+        n_cells_conf_detected = cells_conf,
+        strand_correlation = strand_cor
+      )
+    }
+  }
+  
+  if (length(results) == 0) return(tibble())
+  
+  bind_rows(results) %>%
+    filter(n_cells_conf_detected >= min_cells,
+           strand_correlation >= min_strand_cor,
+           vmr > min_vmr) %>%
+    arrange(desc(vmr))
+}
+
+calculate_allele_freq <- function(mgatk_data, variants, min_coverage = 1) {
+  
+  if (nrow(variants) == 0) {
+    mat <- Matrix::Matrix(0, nrow = 0, ncol = length(mgatk_data$barcodes), sparse = TRUE)
+    colnames(mat) <- mgatk_data$barcodes
+    return(mat)
+  }
+  
+  variant_names <- gsub(">", "-", variants$variant)
+  
+  allele_freq <- Matrix::Matrix(0, nrow = nrow(variants), ncol = length(mgatk_data$barcodes), 
+                                sparse = TRUE)
+  rownames(allele_freq) <- variant_names
+  colnames(allele_freq) <- mgatk_data$barcodes
+  
+  for (i in seq_len(nrow(variants))) {
+    parts <- str_match(variants$variant[i], "(\\d+)([ACGT])>([ACGT])")
+    pos <- as.numeric(parts[2])
+    alt_base <- parts[4]
+    
+    pos_idx <- which(mgatk_data$positions == pos)
+    if (length(pos_idx) == 0) next
+    
+    fwd <- mgatk_data$counts[[paste0(alt_base, "_fwd")]][, pos_idx]
+    rev <- mgatk_data$counts[[paste0(alt_base, "_rev")]][, pos_idx]
+    cov <- mgatk_data$counts$coverage[, pos_idx]
+    
+    allele_freq[i, ] <- ifelse(cov >= min_coverage, (fwd + rev) / cov, 0)
+  }
+  
+  allele_freq
 }

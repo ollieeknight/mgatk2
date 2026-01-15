@@ -8,11 +8,13 @@ from pathlib import Path
 
 import h5py
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

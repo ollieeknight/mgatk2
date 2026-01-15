@@ -150,8 +150,9 @@ def run_pipeline_command(
     """Common pipeline execution logic"""
 
     if verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logger.setLevel(logging.DEBUG)
+        # Only enable DEBUG for mgatk2 loggers, not third-party libraries
+        for logger_name in ['mgatk', __name__]:
+            logging.getLogger(logger_name).setLevel(logging.DEBUG)
 
     __version__ = version("mgatk2")
     logger.info("mgatk2 version %s", __version__)

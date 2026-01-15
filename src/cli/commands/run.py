@@ -36,9 +36,6 @@ def run(
     dry_run,
 ):
     """Run mgatk2 with optimised defaults"""
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
-
     # Determine if processing should be sequential (auto-enabled when threads=1)
     sequential = ncores == 1
 

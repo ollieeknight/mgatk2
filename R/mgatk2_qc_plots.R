@@ -23,14 +23,16 @@ ggplot(cell_coverage_stats, aes(x = log10(mean_coverage), y = coverage_breadth))
   theme_classic() +
   scale_x_continuous(expand = c(0,0)) +
   scale_y_continuous(expand = c(0,0)) +
-  geom_vline(xintercept = log10(10), linetype = "dashed", color = "red") +
-  geom_hline(yintercept = 0.99, linetype = "dashed", color = "red")
+  geom_vline(xintercept = log10(2), linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 0.6, linetype = "dashed", color = "red")
 
 # Filter cells
 mgatk_data <- filter_cells_by_coverage(mgatk_data,
                                        min_mean_coverage = 10, 
                                        min_coverage_breadth = 0.99,
                                        cell_coverage_stats = cell_coverage_stats)
+
+mgatk_data <- recompute_reference_alleles(mgatk_data)
 
 position_coverage <- tibble(
   position = mgatk_data$positions,
@@ -116,13 +118,11 @@ variants_hq <- variants %>%
 
 allele_freq <- calculate_allele_freq(mgatk_data, variants_hq)
 
-allele_freq_filtered <- allele_freq[apply(allele_freq, 1, max) >= 0.95, ]
-
 # Visualize variant allele frequencies with pheatmap
 library(pheatmap)
 
 # Convert sparse matrix to regular matrix for pheatmap
-allele_freq_mat <- as.matrix(allele_freq_filtered)
+allele_freq_mat <- as.matrix(allele_freq)
 
 pheatmap(
   allele_freq_mat,

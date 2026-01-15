@@ -1,7 +1,7 @@
 mgatk2 Run Summary
 ====================
 mgatk_version: 1.0.0
-run_date: 2026-01-12T17:16:40.403303
+run_date: 2026-01-15T11:07:26.751532
 input_bam: /Users/olive/Library/CloudStorage/OneDrive-Charité-UniversitätsmedizinBerlin/lab_book/code/mgatk2/tests/outs/possorted_bam.bam
 output_dir: tenx_output
 reference: chrM
