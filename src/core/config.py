@@ -27,8 +27,9 @@ class DeduplicationConfig:
 class PerformanceConfig:
     """Resource management."""
 
-    n_cores: int = 16
-    batch_size: int = 250
+    n_cores: int = 8  # CPU cores for parallel processing
+    worker_batch_size: int = 8  # Cells per parallel batch
+    io_batch_size: int = 100  # Cells before HDF5 flush (dynamic: 10% of barcodes)
     max_memory_gb: float = 128.0
     sequential: bool = False
 
@@ -84,7 +85,8 @@ class PipelineConfig:
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,
         n_cores: int = 8,
-        batch_size: int | None = None,
+        worker_batch_size: int | None = None,
+        io_batch_size: int | None = None,
         max_memory_gb: float = 128.0,
         sequential: bool = False,
         min_reads_per_cell: int = 1,
@@ -101,7 +103,8 @@ class PipelineConfig:
         )
         self.performance = PerformanceConfig(
             n_cores=n_cores,
-            batch_size=batch_size or n_cores,
+            worker_batch_size=worker_batch_size or n_cores,
+            io_batch_size=io_batch_size or 100,
             max_memory_gb=max_memory_gb,
             sequential=sequential,
         )

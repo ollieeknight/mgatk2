@@ -88,10 +88,10 @@ def common_options(f):
     f = click.option(
         "--batch-size",
         "batch_size",
-        default=250,
+        default=None,
         type=int,
         show_default=True,
-        help="Number of cells to process per batch",
+        help="Worker batch size: cells per parallel processing batch (default: matches cores)",
     )(f)
     f = click.option(
         "--verbose",
@@ -105,10 +105,9 @@ def common_options(f):
         "--threads",
         "-t",
         "ncores",
-        default=16,
+        default=None,
         type=int,
-        show_default=True,
-        help="Number of threads for parallel processing",
+        help="Number of threads (default: auto-detect from SLURM or system)",
     )(f)
     f = click.option(
         "--output",
@@ -245,10 +244,10 @@ def tenx_options(f):
     f = click.option(
         "--batch-size",
         "batch_size",
-        default=250,
+        default=None,
         type=int,
         show_default=True,
-        help="Number of cells to process per batch",
+        help="Worker batch size: cells per parallel processing batch (default: matches cores)",
     )(f)
     f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
     f = click.option(
@@ -392,10 +391,9 @@ def call_options(f):
         "--threads",
         "-t",
         "ncores",
-        default=16,
+        default=None,
         type=int,
-        show_default=True,
-        help="Number of threads for parallel processing",
+        help="Number of threads (default: auto-detect from SLURM or system)",
     )(f)
     f = click.option(
         "--output",

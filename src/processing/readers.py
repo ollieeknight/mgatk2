@@ -22,9 +22,7 @@ logger = logging.getLogger(__name__)
 class BAMReader:
     """Reads and filters BAM files for mtDNA analysis."""
 
-    def __init__(
-        self, bam_path: str, config: PipelineConfig, barcodes: set[str]
-    ):
+    def __init__(self, bam_path: str, config: PipelineConfig, barcodes: set[str]):
         self.bam_path = Path(bam_path)
         self.config = config
         self.barcodes = barcodes
@@ -38,9 +36,7 @@ class BAMReader:
         try:
             bam = pysam.AlignmentFile(str(self.bam_path), "rb")
         except Exception as e:
-            raise BAMFormatError(
-                str(self.bam_path), f"Cannot open: {e}"
-            ) from e
+            raise BAMFormatError(str(self.bam_path), f"Cannot open: {e}") from e
 
         # Check for mitochondrial chromosome
         available = list(bam.references)
@@ -60,9 +56,7 @@ class BAMReader:
                 break
             if i >= 1000:
                 bam.close()
-                raise NoBarcodeTagsError(
-                    str(self.bam_path), self.config.barcode_tag, i
-                )
+                raise NoBarcodeTagsError(str(self.bam_path), self.config.barcode_tag, i)
 
         bam.close()
 
@@ -99,11 +93,7 @@ class BAMReader:
                     total_reads += 1
 
                     # Skip unmapped/secondary/supplementary
-                    if (
-                        read.is_unmapped
-                        or read.is_secondary
-                        or read.is_supplementary
-                    ):
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
                         continue
 
                     if is_bulk_mode:
@@ -137,21 +127,15 @@ class BAMReader:
 
                         # Check both methods for statistics
                         is_fragment_length_dup = (
-                            fragment_length_key
-                            in seen_fragments_with_length[barcode]
+                            fragment_length_key in seen_fragments_with_length[barcode]
                         )
                         is_position_only_dup = (
-                            position_only_key
-                            in seen_fragments_position_only[barcode]
+                            position_only_key in seen_fragments_position_only[barcode]
                         )
 
                         # Add to both tracking sets
-                        seen_fragments_with_length[barcode].add(
-                            fragment_length_key
-                        )
-                        seen_fragments_position_only[barcode].add(
-                            position_only_key
-                        )
+                        seen_fragments_with_length[barcode].add(fragment_length_key)
+                        seen_fragments_position_only[barcode].add(position_only_key)
 
                         # Count duplicates for both methods
                         if is_fragment_length_dup:
@@ -160,15 +144,9 @@ class BAMReader:
                             duplicate_reads_position_only += 1
 
                         # Skip read only if duplicate by the SELECTED method
-                        if (
-                            self.config.dedup.use_fragment_length
-                            and is_fragment_length_dup
-                        ):
+                        if self.config.dedup.use_fragment_length and is_fragment_length_dup:
                             continue  # Skip fragment-length duplicate
-                        if (
-                            not self.config.dedup.use_fragment_length
-                            and is_position_only_dup
-                        ):
+                        if not self.config.dedup.use_fragment_length and is_position_only_dup:
                             continue  # Skip position-only duplicate
 
                     # Convert to lightweight SimpleRead
@@ -176,12 +154,8 @@ class BAMReader:
                         reference_start=read.reference_start,
                         is_reverse=read.is_reverse,
                         mapping_quality=read.mapping_quality,
-                        query_sequence=read.query_sequence.encode(
-                            "ascii"
-                        ),  # Store as bytes
-                        query_qualities=np.array(
-                            read.query_qualities, dtype=np.int8
-                        ),
+                        query_sequence=read.query_sequence.encode("ascii"),  # Store as bytes
+                        query_qualities=np.array(read.query_qualities, dtype=np.int8),
                         cigar=read.cigartuples if read.cigartuples else [],
                         is_proper_pair=read.is_proper_pair,
                         is_paired=read.is_paired,
@@ -213,10 +187,7 @@ class BAMReader:
                 f"{filtered_reads / len(reads_by_barcode):.0f} reads/cell"
             )
             if len(reads_by_barcode) > 1
-            else (
-                f"Kept {filtered_reads:,} reads from "
-                f"{len(reads_by_barcode):,} barcodes"
-            )
+            else (f"Kept {filtered_reads:,} reads from " f"{len(reads_by_barcode):,} barcodes")
         )
 
         # Clear deduplication sets to free memory

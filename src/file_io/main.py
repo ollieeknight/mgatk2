@@ -25,9 +25,7 @@ def _save_hdf5_format(
     # Create HDF5 files
 
     # Write QC and metadata files
-    _write_qc_and_metadata(
-        qc_dir, cell_stats, position_stats, run_metadata, config
-    )
+    _write_qc_and_metadata(qc_dir, cell_stats, position_stats, run_metadata, config)
 
 
 def _save_original_format(
@@ -106,14 +104,10 @@ def _save_original_format(
             f.write(f"{pos}\t{ref_base}\n")
 
     # Write QC and metadata files
-    _write_qc_and_metadata(
-        qc_dir, cell_stats, position_stats, run_metadata, config
-    )
+    _write_qc_and_metadata(qc_dir, cell_stats, position_stats, run_metadata, config)
 
 
-def _write_qc_and_metadata(
-    qc_dir, cell_stats, position_stats, run_metadata, config
-):
+def _write_qc_and_metadata(qc_dir, cell_stats, position_stats, run_metadata, config):
     """Write QC and metadata files."""
     # Write QC files
     if cell_stats:

@@ -10,10 +10,7 @@ import pysam
 
 from analysis.qc import QCCalculator
 from core.config import (
-    DeduplicationConfig,
-    PerformanceConfig,
     PipelineConfig,
-    QualityThresholds,
 )
 from core.exceptions import InvalidInputError
 from file_io import IncrementalHDF5Writer, IncrementalTextWriter
@@ -198,7 +195,8 @@ def run_pipeline(
     min_barcode_reads: int = 1,
     mito_chr: str = "chrM",
     n_cores: int = 16,
-    batch_size: int | None = None,
+    worker_batch_size: int | None = None,
+    io_batch_size: int | None = None,
     max_memory_gb: float = 128.0,
     output_format: str = "standard",
     sequential: bool = False,
@@ -229,25 +227,26 @@ def run_pipeline(
         with open(barcode_file) as f:
             barcodes = [line.strip() for line in f if line.strip()]
 
-    if batch_size is None:
-        batch_size = n_cores
+    if worker_batch_size is None:
+        worker_batch_size = n_cores
+
+    # Dynamically determine I/O batch size as 10% of barcodes with min/max bounds
+    if io_batch_size is None:
+        n_barcodes = len(barcodes)
+        io_batch_size = max(50, min(int(0.1 * n_barcodes), 1000))
+        logger.info(f"I/O batch size set to {io_batch_size} (10% of {n_barcodes} barcodes)")
 
     config = PipelineConfig(
-        quality=QualityThresholds(
-            min_baseq=min_baseq,
-            min_mapq=min_mapq,
-            max_strand_bias=max_strand_bias,
-            min_distance_from_end=min_distance_from_end,
-        ),
-        dedup=DeduplicationConfig(
-            skip=skip_deduplication, use_fragment_length=use_fragment_length_dedup
-        ),
-        performance=PerformanceConfig(
-            n_cores=n_cores,
-            batch_size=batch_size,
-            max_memory_gb=max_memory_gb,
-            sequential=sequential,
-        ),
+        min_baseq=min_baseq,
+        min_mapq=min_mapq,
+        max_strand_bias=max_strand_bias,
+        skip_deduplication=skip_deduplication,
+        use_fragment_length_dedup=use_fragment_length_dedup,
+        n_cores=n_cores,
+        worker_batch_size=worker_batch_size,
+        io_batch_size=io_batch_size,
+        max_memory_gb=max_memory_gb,
+        sequential=sequential,
         min_reads_per_cell=min_reads_per_cell,
         barcode_tag=barcode_tag,
         mito_chr=mito_chr,

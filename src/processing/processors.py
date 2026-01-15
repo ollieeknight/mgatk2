@@ -3,7 +3,6 @@
 import gc
 import logging
 import multiprocessing as mp
-import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
@@ -116,15 +115,20 @@ class CellProcessor:
 
         logger.info(f"Using parallel processing with {self.config.performance.n_cores} cores")
         return self._process_parallel(
-            reads_by_barcode, barcodes, self.config.performance.batch_size, incremental_writer
+            reads_by_barcode,
+            barcodes,
+            self.config.performance.worker_batch_size,
+            incremental_writer,
         )
 
     def _process_parallel(self, reads_by_barcode, barcodes, batch_size, incremental_writer=None):
         n_cells = len(barcodes)
         results = []
         n_batches = (n_cells + batch_size - 1) // batch_size
-        
-        logger.info(f"Starting parallel processing: {n_batches} batches of ~{batch_size} cells each")
+
+        logger.info(
+            f"Starting parallel processing: {n_batches} batches of ~{batch_size} cells each"
+        )
 
         with ProcessPoolExecutor(
             max_workers=self.config.performance.n_cores, mp_context=mp.get_context(MP_CONTEXT)

@@ -233,6 +233,17 @@ def run_pipeline_command(
         if report_subtitle is None:
             report_subtitle = "mgatk2 output analysis"
 
+        # Determine cores once and use consistently throughout the pipeline
+        actual_cores = _determine_cores(ncores)
+        logger.info(f"  Determined cores:       {actual_cores}")
+
+        # Worker batch size: cells to submit to parallel workers at once
+        # Default to actual_cores for optimal parallelization (keep all cores busy)
+        worker_batch = batch_size if batch_size is not None else actual_cores
+        logger.info(f"  Worker batch size:      {worker_batch} cells")
+
+        # Note: I/O batch size will be determined dynamically in pipeline based on total cells
+
         # Run pipeline
         run_args = {
             "bam_path": bam_path,
@@ -248,8 +259,9 @@ def run_pipeline_command(
             "barcode_tag": barcode_tag,
             "min_barcode_reads": min_barcode_reads,
             "mito_chr": mito_chr,
-            "n_cores": _determine_cores(ncores),
-            "batch_size": batch_size or _determine_cores(ncores),
+            "n_cores": actual_cores,
+            "worker_batch_size": worker_batch,
+            "io_batch_size": None,  # Will be determined dynamically in pipeline
             "skip_deduplication": skip_dedup,
             "use_fragment_length_dedup": use_fragment_length_dedup,
             "sequential": sequential,
@@ -315,6 +327,33 @@ def _determine_cores(ncores):
     return actual_cores
 
 
+def _determine_io_batch_size(n_barcodes: int, user_batch_size: int | None = None) -> int:
+    """Determine optimal HDF5 flush batch size based on dataset size.
+
+    Balances between I/O overhead (small batches) and memory usage (large batches).
+
+    Args:
+        n_barcodes: Total number of cells to process
+        user_batch_size: User-specified batch size (takes precedence if provided)
+
+    Returns:
+        Optimal batch size for HDF5 flushing
+    """
+    if user_batch_size is not None:
+        return user_batch_size
+
+    # Dynamic sizing based on dataset size
+    if n_barcodes < 500:
+        return 100  # Small dataset: flush frequently
+    if n_barcodes < 2000:
+        return 250  # Medium dataset
+    if n_barcodes < 5000:
+        return 500  # Medium-large dataset
+    if n_barcodes < 20000:
+        return 1000  # Large dataset
+    return 2000  # Very large dataset: minimize flush overhead
+
+
 def _log_configuration(
     bam_path,
     barcode_file,
@@ -361,7 +400,10 @@ def _log_configuration(
     logger.info("  Cores:                  %s", cores_msg)
 
     if batch_size is None:
-        batch_size = 250
+        batch_size = actual_cores
+        batch_msg = f"{batch_size} (matches cores)"
+    else:
+        batch_msg = str(batch_size)
 
     logger.info("  Barcode tag:            %s", barcode_tag)
     if barcode_file is None:
@@ -380,7 +422,7 @@ def _log_configuration(
     logger.info("  Max strand bias:        %s", max_strand_bias)
     logger.info("  Min dist from end:      %sbp", min_distance_from_end)
     logger.info("  Deduplication:          %s", dedup_display)
-    logger.info("  Batch size:             %s cells", batch_size)
+    logger.info("  Worker batch size:      %s cells", batch_msg)
 
     format_display = "text files (.txt.gz)" if output_format == "txt" else "HDF5 (.h5)"
     logger.info("  Output format:          %s", format_display)
