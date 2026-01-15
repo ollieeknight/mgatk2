@@ -76,7 +76,6 @@ class MtDNAPipeline:
     def run(self) -> dict[str, Any]:
         start_time = time.time()
 
-        logger.info("")
         logger.info("Collecting reads from BAM by barcode...")
         reader = BAMReader(str(self.bam_path), self.config, self.barcodes)
         reads_by_barcode, stats = reader.collect_reads_by_barcode()
@@ -163,11 +162,14 @@ class MtDNAPipeline:
         seconds = int(elapsed % 60)
 
         if hours > 0:
-            logger.info(f"Pipeline complete (Elapsed time: {hours}h {minutes}m {seconds}s)")
+            logger.info("Pipeline complete")
+            logger.info(f"Elapsed time: {hours}h {minutes}m {seconds}s")
         elif minutes > 0:
-            logger.info(f"Pipeline complete (Elapsed time: {minutes}m {seconds}s)")
+            logger.info("Pipeline complete")
+            logger.info(f"Elapsed time: {minutes}m {seconds}s")
         else:
-            logger.info(f"Pipeline complete (Elapsed time: {seconds}s)")
+            logger.info("Pipeline complete")
+            logger.info(f"Elapsed time: {seconds}s")
 
         return {
             "cells_processed": n_cells_input,
@@ -230,11 +232,9 @@ def run_pipeline(
     if worker_batch_size is None:
         worker_batch_size = n_cores
 
-    # Dynamically determine I/O batch size as 10% of barcodes with min/max bounds
     if io_batch_size is None:
         n_barcodes = len(barcodes)
         io_batch_size = max(50, min(int(0.1 * n_barcodes), 1000))
-        logger.info(f"I/O batch size set to {io_batch_size} (10% of {n_barcodes} barcodes)")
 
     config = PipelineConfig(
         min_baseq=min_baseq,

@@ -35,7 +35,6 @@ def auto_detect_10x_structure(
             bam_file = outs_dir / "possorted_bam.bam" if outs_dir.exists() else None
 
         if bam_file and bam_file.exists():
-            logger.info(f"Found 10x BAM: {bam_file}")
             bam_path = str(bam_file)
             if not barcode_file:
                 barcode_file = _find_barcode_file(bam_file.parent)
@@ -56,7 +55,6 @@ def _find_barcode_file(directory: Path) -> str | None:
     # Try singlecell.csv first
     singlecell = directory / "singlecell.csv"
     if singlecell.exists():
-        logger.info(f"Found {singlecell}")
         return str(singlecell)
 
     # Try barcode files
@@ -66,7 +64,6 @@ def _find_barcode_file(directory: Path) -> str | None:
     ]:
         bc_file = directory / pattern
         if bc_file.exists():
-            logger.info(f"Found {bc_file}")
             return str(bc_file)
 
     logger.warning("No barcode file found")
@@ -197,8 +194,6 @@ def run_pipeline_command(
         # Barcode file will be auto-extracted in run_pipeline if None
         if barcode_file is None:
             logger.info("No barcode file provided - will extract barcodes from BAM")
-        else:
-            logger.info("Using barcode file: %s", barcode_file)
         barcode_file_to_cleanup = None
 
         # Log configuration
@@ -233,16 +228,10 @@ def run_pipeline_command(
         if report_subtitle is None:
             report_subtitle = "mgatk2 output analysis"
 
-        # Determine cores once and use consistently throughout the pipeline
         actual_cores = _determine_cores(ncores)
-        logger.info(f"  Determined cores:       {actual_cores}")
 
-        # Worker batch size: cells to submit to parallel workers at once
-        # Default to actual_cores for optimal parallelization (keep all cores busy)
         worker_batch = batch_size if batch_size is not None else actual_cores
         logger.info(f"  Worker batch size:      {worker_batch} cells")
-
-        # Note: I/O batch size will be determined dynamically in pipeline based on total cells
 
         # Run pipeline
         run_args = {
@@ -328,17 +317,7 @@ def _determine_cores(ncores):
 
 
 def _determine_io_batch_size(n_barcodes: int, user_batch_size: int | None = None) -> int:
-    """Determine optimal HDF5 flush batch size based on dataset size.
-
-    Balances between I/O overhead (small batches) and memory usage (large batches).
-
-    Args:
-        n_barcodes: Total number of cells to process
-        user_batch_size: User-specified batch size (takes precedence if provided)
-
-    Returns:
-        Optimal batch size for HDF5 flushing
-    """
+    """Determine optimal HDF5 flush batch size based on dataset size"""
     if user_batch_size is not None:
         return user_batch_size
 

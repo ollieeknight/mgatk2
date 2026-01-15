@@ -60,8 +60,6 @@ def load_singlecell_csv(
         if len(barcodes) == 0:
             raise InvalidInputError(f"No cells found with is__cell_barcode == 1 in {csv_file}")
 
-        logger.info(f"Performing analysis on {len(barcodes)} barcodes " f"from singlecell.csv")
-
         return barcodes, metadata
 
     except FileNotFoundError as e:

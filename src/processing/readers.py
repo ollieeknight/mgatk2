@@ -167,18 +167,17 @@ class BAMReader:
         except Exception as e:
             raise BAMReadError(str(self.bam_path), f"Read error: {e}") from e
 
-        logger.info("Processed %d mitochondrial reads", total_reads)
         if not self.config.dedup.skip:
             duplicates_removed = (
                 duplicate_reads_with_length
                 if self.config.dedup.use_fragment_length
                 else duplicate_reads_position_only
             )
-            logger.info(
-                "%d duplicate reads removed (%.1f%%)",
-                duplicates_removed,
-                duplicates_removed / total_reads * 100,
-            )
+        logger.info(
+            "%s duplicate reads removed (%.1f%%)",
+            f"{duplicates_removed:,}",
+            duplicates_removed / total_reads * 100,
+        )
 
         logger.info(
             (

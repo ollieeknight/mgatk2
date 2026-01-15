@@ -101,7 +101,7 @@ class CellProcessor:
         total_reads = sum(len(r) for r in reads_by_barcode.values())
         avg = total_reads / n_cells if n_cells > 0 else 0
 
-        logger.info(f"Processing {n_cells} cells, {avg:.0f} avg reads/cell")
+        logger.info(f"Processing {n_cells} cells at an average of {avg:.0f} reads/cell")
 
         # Check if sequential processing is forced via config
         if self.config.performance.sequential:
@@ -113,7 +113,6 @@ class CellProcessor:
             logger.info("Large dataset (>50M reads), using sequential processing")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
-        logger.info(f"Using parallel processing with {self.config.performance.n_cores} cores")
         return self._process_parallel(
             reads_by_barcode,
             barcodes,
@@ -125,10 +124,6 @@ class CellProcessor:
         n_cells = len(barcodes)
         results = []
         n_batches = (n_cells + batch_size - 1) // batch_size
-
-        logger.info(
-            f"Starting parallel processing: {n_batches} batches of ~{batch_size} cells each"
-        )
 
         with ProcessPoolExecutor(
             max_workers=self.config.performance.n_cores, mp_context=mp.get_context(MP_CONTEXT)
