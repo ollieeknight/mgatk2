@@ -20,6 +20,17 @@ conda activate mgatk2
 pip install git+https://github.com/ollieeknight/mgatk2.git
 ```
 
+## Testing
+
+To test if the package works well on your system, you can run
+```bash
+git clone https://github.com/ollieeknight/mgatk2
+cd mgatk2
+make install
+make run
+make tenx
+```
+
 ## Quick Start
 
 ### Running with 10x Genomics data

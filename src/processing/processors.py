@@ -13,7 +13,9 @@ from processing.pileup import PileupGenerator
 
 logger = logging.getLogger(__name__)
 
-MP_CONTEXT = "fork" if sys.platform.startswith("linux") else "spawn"
+# Use spawn context on HPC/cluster environments for better stability
+# Fork can have issues with certain file handles and threading on HPC
+MP_CONTEXT = "spawn"
 
 
 def process_barcode_worker(args):
@@ -102,10 +104,17 @@ class CellProcessor:
 
         logger.info(f"Processing {n_cells} cells, {avg:.0f} avg reads/cell")
 
-        if total_reads > 50_000_000:
-            logger.info("Large dataset, using sequential processing")
+        # Check if sequential processing is forced via config
+        if self.config.performance.sequential:
+            logger.info("Sequential processing enabled via config")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
+        # For very large datasets, use sequential to avoid memory issues
+        if total_reads > 50_000_000:
+            logger.info("Large dataset (>50M reads), using sequential processing")
+            return self.process_cells_direct(reads_by_barcode, incremental_writer)
+
+        logger.info(f"Using parallel processing with {self.config.performance.n_cores} cores")
         return self._process_parallel(
             reads_by_barcode, barcodes, self.config.performance.batch_size, incremental_writer
         )
@@ -114,6 +123,8 @@ class CellProcessor:
         n_cells = len(barcodes)
         results = []
         n_batches = (n_cells + batch_size - 1) // batch_size
+        
+        logger.info(f"Starting parallel processing: {n_batches} batches of ~{batch_size} cells each")
 
         with ProcessPoolExecutor(
             max_workers=self.config.performance.n_cores, mp_context=mp.get_context(MP_CONTEXT)

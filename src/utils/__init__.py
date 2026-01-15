@@ -1,14 +1,17 @@
 """Utility functions."""
 
 from . import genome_utils, masking
-from .utils import *  # noqa: F403
+from .utils import (
+    load_singlecell_csv,
+    validate_bam_file,
+    validate_barcode_file,
+)
 
 __all__ = [
     # From utils
-    "get_reference_sequence",
-    "load_barcodes",
     "load_singlecell_csv",
-    "format_memory",
+    "validate_bam_file",
+    "validate_barcode_file",
     # Modules
     "genome_utils",
     "masking",

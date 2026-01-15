@@ -515,5 +515,3 @@ def write_parameters_json(parameters: dict, output_path: Path):
 
     with open(output_path, "w") as f:
         json.dump(parameters, f, indent=2, default=str)
-
-    logger.info("Wrote parameters to: %s", output_path)
