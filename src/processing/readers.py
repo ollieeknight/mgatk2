@@ -180,13 +180,9 @@ class BAMReader:
             )
 
         logger.info(
-            (
-                f"Kept {filtered_reads:,} reads from "
-                f"{len(reads_by_barcode):,} barcodes at an average of "
-                f"{filtered_reads / len(reads_by_barcode):.0f} reads/cell"
-            )
+            f"Kept {filtered_reads:,} reads from {len(reads_by_barcode):,} barcodes at an average of {filtered_reads / len(reads_by_barcode):.0f} reads/cell"
             if len(reads_by_barcode) > 1
-            else (f"Kept {filtered_reads:,} reads from " f"{len(reads_by_barcode):,} barcodes")
+            else f"Kept {filtered_reads:,} reads from {len(reads_by_barcode):,} barcodes"
         )
 
         # Clear deduplication sets to free memory
