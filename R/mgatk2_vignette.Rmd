@@ -1,0 +1,429 @@
+---
+title: "mgatk2: Quality Control and Variant Analysis"
+author: "Oliver Knight"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    highlight: tango
+vignette: >
+  %\VignetteIndexEntry{mgatk2: Quality Control and Variant Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300
+)
+```
+
+# Introduction
+
+This vignette demonstrates quality control and variant analysis workflows for mitochondrial DNA sequencing data processed with **mgatk2**. We'll cover:
+
+- Loading HDF5 output from mgatk2
+- Cell-level QC metrics and filtering
+- Position-level coverage analysis
+- Variant identification and filtering
+- Integration with Seurat/Signac
+
+# Setup
+
+Load required packages:
+
+```{r libraries}
+library(tidyverse)
+library(hdf5r)
+library(Matrix)
+library(Signac)
+library(Seurat)
+library(pheatmap)
+
+options(scipen = 999)
+```
+
+Source the mgatk2 helper functions:
+
+```{r source-functions}
+source("~/code/mgatk2/R/mgatk2_functions.R")
+```
+
+# Load mgatk2 Data
+
+Load the HDF5 output from an mgatk2 run:
+
+```{r load-data}
+# Load data from HDF5 format
+mgatk_data <- read_mgatk_hdf5("code/mgatk2/tests/run_output/")
+```
+
+The `mgatk_data` object contains:
+
+- **counts**: Coverage and allele count matrices per base
+- **metadata**: Per-cell statistics
+- **positions**: Genomic positions analyzed
+- **reference**: Reference allele at each position
+
+# Cell-Level Quality Control
+
+## Calculate Coverage Statistics
+
+Calculate mean coverage and breadth of coverage for each cell:
+
+```{r cell-coverage-stats}
+cell_coverage_stats <- calculate_cell_coverage_stats(mgatk_data) %>%
+  mutate(total_bases = mgatk_data$total_bases[barcode])
+
+head(cell_coverage_stats)
+```
+
+## Coverage QC Plot
+
+Visualize the relationship between mean coverage depth and coverage breadth:
+
+```{r coverage-qc-plot, fig.width=8, fig.height=6}
+ggplot(cell_coverage_stats, aes(x = log10(mean_coverage), y = coverage_breadth)) +
+  geom_point(alpha = 1, colour = 'darkblue') +
+  labs(
+    title = "Cell Quality Control: Coverage Metrics",
+    x = "Mean depth (log10)", 
+    y = "Coverage breadth"
+  ) +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  geom_vline(xintercept = log10(2), linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 0.6, linetype = "dashed", color = "red")
+```
+
+The dashed lines indicate typical QC thresholds:
+
+- **Vertical (red)**: Minimum mean coverage of 2× (log10(2) ≈ 0.3)
+- **Horizontal (red)**: Minimum 60% genome coverage
+
+## Filter Low-Quality Cells
+
+Apply stringent QC filters to retain high-quality cells:
+
+```{r filter-cells}
+mgatk_data <- filter_cells_by_coverage(
+  mgatk_data,
+  min_mean_coverage = 10, 
+  min_coverage_breadth = 0.99,
+  cell_coverage_stats = cell_coverage_stats
+)
+
+cat(sprintf("Retained %d high-quality cells\n", length(mgatk_data$barcodes)))
+```
+
+## Recompute Reference Alleles
+
+After filtering, recompute the consensus reference allele at each position:
+
+```{r recompute-reference}
+mgatk_data <- recompute_reference_alleles(mgatk_data)
+```
+
+# Position-Level Analysis
+
+## Mean Coverage Across the Genome
+
+Calculate and visualize mean coverage at each genomic position:
+
+```{r position-coverage}
+position_coverage <- tibble(
+  position = mgatk_data$positions,
+  mean_coverage = colMeans(mgatk_data$counts$coverage)
+)
+
+head(position_coverage)
+```
+
+### Linear Coverage Plot
+
+```{r linear-coverage-plot, fig.width=12, fig.height=4}
+ggplot(position_coverage, aes(x = position, y = mean_coverage)) +
+  geom_line(color = "darkblue", linewidth = 0.5) +
+  labs(
+    title = "Mitochondrial Genome Coverage", 
+    x = "chrM (bp)", 
+    y = "Mean depth"
+  ) +
+  theme_classic() + 
+  theme(legend.position = 'none') +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, max(mgatk_data$positions))) +
+  scale_y_continuous(expand = c(0, 0))
+```
+
+### Circular Coverage Plot
+
+Visualize coverage on a circular plot to represent the circular mitochondrial genome:
+
+```{r circular-coverage-plot, fig.width=8, fig.height=8}
+ggplot(position_coverage, aes(x = position, y = mean_coverage)) +
+  geom_line(color = "darkblue", linewidth = 0.5) +
+  coord_polar() +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, max(mgatk_data$positions))) +
+  scale_y_continuous(expand = c(0, 0), trans = 'log10') +
+  labs(
+    title = "Circular Mitochondrial Genome Coverage", 
+    x = "chrM (bp)", 
+    y = "Coverage (log10)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8, colour = "black"),
+    axis.text.x = element_text(colour = "black"),
+    axis.title = element_text(colour = "black"),
+    panel.grid.major = element_line(colour = alpha("black", 0.3)),
+    panel.grid.minor = element_line(colour = alpha("black", 0.2))
+  )
+```
+
+## Coverage Dropout Analysis
+
+Identify positions with low coverage across cells:
+
+```{r position-stats}
+position_stats <- calculate_position_coverage_stats(mgatk_data)
+```
+
+```{r dropout-plot, fig.width=12, fig.height=4}
+ggplot(position_stats, aes(x = position, y = coverage_dropout)) +
+  geom_line(color = "darkblue", linewidth = 0.8) +
+  labs(
+    title = "Coverage Dropout Across Mitochondrial Genome",
+    x = "chrM (bp)", 
+    y = "Fraction cells with 0 coverage"
+  ) +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, max(mgatk_data$positions))) +
+  scale_y_continuous(expand = c(0, 0))
+```
+
+## Tn5 Transposition Analysis
+
+For ATAC-seq data, visualize Tn5 cut site distribution:
+
+```{r transposition-stats}
+transposition_stats <- calculate_transposition_stats(mgatk_data)
+```
+
+```{r tn5-plot, fig.width=12, fig.height=4}
+ggplot(transposition_stats, aes(x = position, y = tn5_cuts_total)) +
+  geom_col(fill = "darkblue", width = 10) +
+  labs(
+    title = "Tn5 Cut Sites Across Mitochondrial Genome", 
+    x = "chrM (bp)", 
+    y = "Tn5 cut sites (n)"
+  ) +
+  theme_classic() +
+  theme(legend.position = 'none') +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0))
+```
+
+# Variant Identification
+
+## Identify All Variants
+
+Identify variants based on allele frequency and other metrics:
+
+```{r identify-variants}
+variants <- identify_variants(mgatk_data)
+
+# Filter to variants detected in multiple cells
+variants_filtered <- variants %>%
+  filter(n_cells_conf_detected > 1)
+
+cat(sprintf("Identified %d variants detected in >1 cell\n", nrow(variants_filtered)))
+```
+
+## Variant Quality Metrics
+
+Visualize variant quality using strand concordance and variance-mean ratio (VMR):
+
+```{r variant-qc-plot, fig.width=8, fig.height=6}
+ggplot(variants_filtered, aes(
+  x = strand_correlation, 
+  y = vmr, 
+  colour = strand_correlation >= 0.65 & vmr > 0.1
+)) +
+  geom_hline(yintercept = 0.10, linetype = "dashed", colour = "black") +
+  geom_vline(xintercept = 0.65, linetype = "dashed", colour = "black") +
+  geom_point(alpha = 1) +
+  scale_y_log10() +
+  scale_colour_manual(values = c("FALSE" = "black", "TRUE" = "darkred")) +
+  labs(
+    title = "Variant Quality Metrics",
+    x = "Strand concordance",
+    y = "Variance-mean ratio"
+  ) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 1.01)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0.001, 1))
+```
+
+High-quality variants (red) show:
+
+- **High strand concordance** (≥0.65): Variant detected on both DNA strands
+- **High VMR** (>0.1): Variant shows cell-to-cell variability
+
+## Filter High-Quality Variants
+
+Apply stringent filters to identify confident variants:
+
+```{r filter-variants}
+variants_hq <- variants %>%
+  filter(
+    n_cells_conf_detected > 1,
+    strand_correlation >= 0.65,
+    vmr > 0.01
+  )
+
+cat(sprintf("Identified %d high-quality variants\n", nrow(variants_hq)))
+```
+
+# Allele Frequency Analysis
+
+## Calculate Allele Frequencies
+
+Generate an allele frequency matrix for high-quality variants:
+
+```{r allele-freq}
+allele_freq <- calculate_allele_freq(mgatk_data, variants_hq)
+
+dim(allele_freq)
+```
+
+## Heatmap Visualization
+
+Visualize variant allele frequencies across cells:
+
+```{r heatmap, fig.width=10, fig.height=8}
+# Convert sparse matrix to regular matrix for pheatmap
+allele_freq_mat <- as.matrix(allele_freq)
+
+pheatmap(
+  allele_freq_mat,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  show_rownames = TRUE,
+  show_colnames = FALSE,
+  color = colorRampPalette(c("white", "red"))(100),
+  border_color = NA,
+  fontsize_row = 8,
+  main = "Variant Allele Frequencies Across Cells"
+)
+```
+
+# Integration with Seurat/Signac
+
+## Load Text Format Output
+
+For compatibility with Signac, load the text format output:
+
+```{r load-signac}
+mito <- ReadMGATK(dir = 'code/mgatk2/tests/tenx_output/output/')
+
+refallele <- mito$refallele
+```
+
+## Create Seurat Object
+
+```{r create-seurat}
+seurat_object <- CreateSeuratObject(
+  counts = mito$counts, 
+  assay = 'mito'
+)
+
+seurat_object
+```
+
+## Identify Variants with Signac
+
+```{r signac-variants}
+variable_sites <- IdentifyVariants(
+  seurat_object, 
+  assay = "mito", 
+  refallele = refallele
+)
+
+head(variable_sites)
+```
+
+## Variant Plot
+
+```{r variant-plot, fig.width=10, fig.height=6}
+VariantPlot(variants = variable_sites, min.cells = 2)
+```
+
+## Filter Confident Variants
+
+```{r filter-signac-variants}
+confident_variants <- subset(
+  variable_sites, 
+  subset = n_cells_conf_detected >= 2 & 
+    strand_correlation >= 0.65 & 
+    vmr > 0.01
+)
+
+cat(sprintf("Identified %d confident variants for Seurat\n", nrow(confident_variants)))
+```
+
+## Create Allele Frequency Assay
+
+```{r allele-freq-assay}
+seurat_object <- AlleleFreq(
+  seurat_object, 
+  assay = 'mito', 
+  variants = confident_variants$variant
+)
+
+# Rename assay for downstream analysis
+seurat_object[['mgatk']] <- seurat_object[['alleles']]
+
+DefaultAssay(seurat_object) <- 'mgatk'
+seurat_object[['alleles']] <- NULL
+seurat_object[['mito']] <- NULL
+
+seurat_object
+```
+
+# Summary
+
+This vignette demonstrated:
+
+1. ✅ Loading mgatk2 HDF5 output
+2. ✅ Cell-level QC and filtering
+3. ✅ Position-level coverage analysis
+4. ✅ Variant identification and quality filtering
+5. ✅ Allele frequency matrix generation
+6. ✅ Integration with Seurat/Signac workflows
+
+The filtered variant allele frequency matrix can now be used for:
+
+- Dimensionality reduction
+- Clustering analysis
+- Clonal lineage tracing
+- Integration with chromatin accessibility data
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

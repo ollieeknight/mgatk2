@@ -23,7 +23,7 @@ dependencies = [
 Repository = "https://github.com/ollieeknight/mgatk2"
 
 [project.scripts]
-mgatk2 = "cli:main"
+mgatk2 = "cli.base:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
