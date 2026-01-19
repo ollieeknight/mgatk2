@@ -11,21 +11,16 @@ def write_cell_stats(cell_stats: list[dict], output_path: Path):
     if not cell_stats:
         return
 
-    # Get all unique keys from all cells
-    all_keys: set[str] = set()
-    for stats in cell_stats:
-        all_keys.update(stats.keys())
-
-    # Sort keys for consistent output
-    sorted_keys = sorted(all_keys)
+    # Define the columns we want to output in order
+    output_columns = ["barcode", "mean_depth", "coverage_breadth", "total_fragments", "total_reads"]
 
     with open(output_path, "w") as f:
         # Write header
-        f.write(",".join(sorted_keys) + "\n")
+        f.write(",".join(output_columns) + "\n")
 
         # Write data
         for stats in cell_stats:
-            values = [str(stats.get(key, "NA")) for key in sorted_keys]
+            values = [str(stats.get(key, "NA")) for key in output_columns]
             f.write(",".join(values) + "\n")
 
 
@@ -35,7 +30,7 @@ def write_position_stats(position_stats: dict, output_path: Path, mito_length: i
         # Write header
         f.write(
             "position,n_cells_any_coverage,n_cells_10x,n_cells_50x,"
-            "mean_coverage,median_coverage,coverage_cv\n"
+            "mean_depth,median_depth,coverage_cv\n"
         )
 
         # Write data for each position

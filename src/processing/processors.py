@@ -32,11 +32,11 @@ def process_barcode_worker(args):
 
         n_reads = len(reads)
         n_paired = sum(1 for r in reads if r.is_paired)
-        n_proper = sum(1 for r in reads if r.is_proper_pair)
-        fwd = sum(1 for r in reads if not r.is_reverse)
 
         depths = np.array([c["depth"] for c in pileup.values()])
         mean_cov = depths.mean()
+        positions_covered = len(depths)
+        coverage_breadth = positions_covered / config.mito_length if config.mito_length > 0 else 0
 
         return {
             "barcode": barcode,
@@ -46,19 +46,8 @@ def process_barcode_worker(args):
                 "barcode": barcode,
                 "total_reads": n_reads,
                 "total_fragments": n_reads // 2 if n_paired > 0 else n_reads,
-                "proper_pairs": n_proper,
-                "proper_pair_pct": 100.0 * n_proper / n_reads if n_reads > 0 else 0,
-                "mean_coverage": mean_cov,
-                "median_coverage": np.median(depths),
-                "coverage_std": depths.std(),
-                "coverage_cv": depths.std() / mean_cov if mean_cov > 0 else 0,
-                "positions_covered": len(depths),
-                "positions_10x": (depths >= 10).sum(),
-                "positions_50x": (depths >= 50).sum(),
-                "mean_mapq": np.mean([r.mapping_quality for r in reads]),
-                "forward_reads": fwd,
-                "reverse_reads": n_reads - fwd,
-                "strand_ratio": fwd / (n_reads - fwd) if fwd < n_reads else 0,
+                "mean_depth": mean_cov,
+                "coverage_breadth": coverage_breadth,
             },
         }
     except Exception as e:
@@ -108,9 +97,9 @@ class CellProcessor:
             logger.info("Sequential processing enabled via config")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
-        # For very large datasets, use sequential to avoid memory issues
-        if total_reads > 50_000_000:
-            logger.info("Large dataset (>50M reads), using sequential processing")
+        # For datasets with high reads per cell, use sequential to avoid memory issues
+        if avg > 2500:
+            logger.info(f"High reads per cell ({avg:.0f} > 2500), using sequential processing")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
         return self._process_parallel(

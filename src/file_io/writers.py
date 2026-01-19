@@ -423,9 +423,9 @@ class IncrementalTextWriter:
         bases = ["A", "C", "G", "T"]
         self.base_files = {}
         for base in bases:
-            self.base_files[base] = open(self.output_dir / f"{base}.txt", "w")
+            self.base_files[base] = open(self.output_dir / f"output.{base}.txt", "w")
 
-        self.coverage_file = open(self.output_dir / "coverage.txt", "w")
+        self.coverage_file = open(self.output_dir / "output.coverage.txt", "w")
 
     def write_cell(self, result: dict):
         barcode = result["barcode"]
@@ -471,14 +471,14 @@ class IncrementalTextWriter:
         # Compress output text files with standard gzip
         logger.info("Compressing output .txt files...")
         for base in ["A", "C", "G", "T"]:
-            txt_file = self.output_dir / f"{base}.txt"
+            txt_file = self.output_dir / f"output.{base}.txt"
             gz_file = self.output_dir / f"output.{base}.txt.gz"
             with open(txt_file, "rb") as f_in:
                 with gzip.open(gz_file, "wb", compresslevel=9) as f_out:
                     shutil.copyfileobj(f_in, f_out)
             txt_file.unlink()
 
-        txt_file = self.output_dir / "coverage.txt"
+        txt_file = self.output_dir / "output.coverage.txt"
         gz_file = self.output_dir / "output.coverage.txt.gz"
         with open(txt_file, "rb") as f_in:
             with gzip.open(gz_file, "wb", compresslevel=9) as f_out:

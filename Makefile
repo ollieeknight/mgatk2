@@ -3,7 +3,7 @@
 setup:
 	python3 -m venv .venv
 	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e . ruff isort black flake8
+	.venv/bin/pip install -e . isort black ruff flake8
 
 format:
 	.venv/bin/isort src/
@@ -15,7 +15,8 @@ lint:
 
 run:
 	.venv/bin/mgatk2 run --help
-	cd tests && ../.venv/bin/mgatk2 run -o run_output
+	cd tests && ../.venv/bin/mgatk2 run -o run_hdf5_output -f hdf5
+	cd tests && ../.venv/bin/mgatk2 run -o run_txt_output -f txt
 
 tenx:
 	.venv/bin/mgatk2 tenx --help
