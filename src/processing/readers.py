@@ -150,16 +150,22 @@ class BAMReader:
                             continue  # Skip position-only duplicate
 
                     # Convert to lightweight SimpleRead
+                    if read.query_qualities is not None:
+                        qualities = np.array(read.query_qualities, dtype=np.int8)
+                    else:
+                        # Assign maximum quality (60) if qualities are missing
+                        qualities = np.full(len(read.query_sequence), 60, dtype=np.int8)
+
                     simple_read = SimpleRead(
                         reference_start=read.reference_start,
                         is_reverse=read.is_reverse,
                         mapping_quality=read.mapping_quality,
-                        query_sequence=read.query_sequence.encode("ascii"),  # Store as bytes
-                        query_qualities=np.array(read.query_qualities, dtype=np.int8),
+                        query_sequence=read.query_sequence.encode("ascii"),
+                        query_qualities=qualities,
                         cigar=read.cigartuples if read.cigartuples else [],
                         is_proper_pair=read.is_proper_pair,
                         is_paired=read.is_paired,
-                        template_length=read.template_length,
+                        template_length=read.template_length if read.template_length is not None else 0,
                     )
                     reads_by_barcode[barcode].append(simple_read)
                     filtered_reads += 1
