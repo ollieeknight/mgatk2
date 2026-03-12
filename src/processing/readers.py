@@ -121,7 +121,7 @@ class BAMReader:
                         fragment_length_key = (
                             ref_start,
                             is_rev,
-                            abs(read.template_length),
+                            abs(read.template_length) if read.template_length is not None else 0,
                         )
                         position_only_key = (ref_start, is_rev)
 
