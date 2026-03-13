@@ -4,7 +4,9 @@ import errno
 import gzip
 import json
 import logging
+import os
 import shutil
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -34,14 +36,19 @@ class IncrementalHDF5Writer:
         barcode_metadata=None,
     ):
         """Initialise incremental writer with batch buffering."""
-        self.output_dir = output_dir / "output"
-        self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.final_output_dir = output_dir / "output"
+        self.final_output_dir.mkdir(exist_ok=True, parents=True)
         self.config = config
         self.barcodes = barcodes
         self.barcode_to_idx = {bc: i for i, bc in enumerate(barcodes)}
         self.n_barcodes = len(barcodes)
         self.n_positions = config.mito_length
         self.barcode_metadata = barcode_metadata
+
+        staging_parent = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
+        self.staging_dir = Path(tempfile.mkdtemp(prefix="mgatk2_hdf5_", dir=staging_parent))
+        self.output_dir = self.staging_dir / "output"
+        self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self.cell_stats: list[dict] = []
         self.position_base_counts: dict[int, dict[str, int]] = defaultdict(
@@ -54,6 +61,8 @@ class IncrementalHDF5Writer:
         self.write_error_count = 0
         self.batch_buffer: list[dict] = []
         self.cells_written = 0
+
+        logger.info("Staging HDF5 output in %s", self.staging_dir)
 
         self._init_hdf5_files()
 
@@ -68,7 +77,7 @@ class IncrementalHDF5Writer:
         self.counts_file = h5py.File(
             self.output_dir / "counts.h5",
             "w",
-            libver="latest",
+            libver="earliest",
         )
         self.counts_file.attrs["n_cells"] = self.n_barcodes
         self.counts_file.attrs["n_positions"] = self.n_positions
@@ -104,7 +113,7 @@ class IncrementalHDF5Writer:
         self.metadata_file = h5py.File(
             self.output_dir / "metadata.h5",
             "w",
-            libver="latest",  # Use latest HDF5 format for better performance
+            libver="earliest",
         )
         self.metadata_file.attrs["mito_chr"] = self.config.mito_chr
         self.metadata_file.attrs["mito_length"] = self.n_positions
@@ -394,6 +403,8 @@ class IncrementalHDF5Writer:
         self.counts_file.close()
         self.metadata_file.close()
 
+        self._publish_hdf5_files()
+
         if self.write_error_count > 0:
             logger.warning(
                 "Encountered %d temporary write errors during processing (all recovered)",
@@ -404,6 +415,21 @@ class IncrementalHDF5Writer:
         qc_dir.mkdir(exist_ok=True, parents=True)
         if self.cell_stats:
             write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
+
+    def _publish_hdf5_files(self):
+        """Move finalized HDF5 files from local staging to the target output directory."""
+        self.final_output_dir.mkdir(exist_ok=True, parents=True)
+
+        for filename in ["counts.h5", "metadata.h5"]:
+            src = self.output_dir / filename
+            dest = self.final_output_dir / filename
+
+            if dest.exists():
+                dest.unlink()
+
+            shutil.move(str(src), str(dest))
+
+        shutil.rmtree(self.staging_dir, ignore_errors=True)
 
 
 class IncrementalTextWriter:
