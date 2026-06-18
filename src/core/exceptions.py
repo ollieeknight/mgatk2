@@ -21,16 +21,6 @@ class BAMReadError(ProcessingError):
         super().__init__(f"BAM read error for {bam_path}: {message}")
 
 
-class InsufficientDataError(ProcessingError):
-    """Raised when insufficient data is available to proceed"""
-
-    def __init__(self, n_items: int, min_required: int, item_type: str = "cells"):
-        self.n_items = n_items
-        self.min_required = min_required
-        self.item_type = item_type
-        super().__init__(f"Only {n_items} {item_type} found, need >= {min_required}")
-
-
 class NoChrMReadsError(BAMReadError):
     """Raised when BAM file contains no mitochondrial reads"""
 
@@ -68,19 +58,3 @@ class BAMFormatError(InvalidInputError):
         if details:
             message += f"\n{details}"
         super().__init__(message)
-
-
-class HDF5WriteError(ProcessingError):
-    """Raised when HDF5 file writing fails"""
-
-    def __init__(self, hdf5_path: str, message: str):
-        self.hdf5_path = hdf5_path
-        super().__init__(f"HDF5 write error for {hdf5_path}: {message}")
-
-
-class HDF5ReadError(ProcessingError):
-    """Raised when HDF5 file reading fails"""
-
-    def __init__(self, hdf5_path: str, message: str):
-        self.hdf5_path = hdf5_path
-        super().__init__(f"HDF5 read error for {hdf5_path}: {message}")

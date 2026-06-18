@@ -139,6 +139,10 @@ def run_pipeline_command(
     output_format,
     sequential,
     dry_run=False,
+    nh_max=0,
+    nm_max=0,
+    pileup_mode="classic",
+    compute_tn5=True,
     original_bam_path=None,
     report_title=None,
     report_subtitle=None,
@@ -215,6 +219,10 @@ def run_pipeline_command(
             sequential,
             batch_size,
             max_memory,
+            nh_max=nh_max,
+            nm_max=nm_max,
+            pileup_mode=pileup_mode,
+            compute_tn5=compute_tn5,
         )
 
         if dry_run:
@@ -253,6 +261,10 @@ def run_pipeline_command(
             "io_batch_size": None,  # Will be determined dynamically in pipeline
             "skip_deduplication": skip_dedup,
             "use_fragment_length_dedup": use_fragment_length_dedup,
+            "nh_max": nh_max,
+            "nm_max": nm_max,
+            "pileup_mode": pileup_mode,
+            "compute_tn5": compute_tn5,
             "sequential": sequential,
             "report_title": report_title,
             "report_subtitle": report_subtitle,
@@ -351,6 +363,10 @@ def _log_configuration(
     sequential,
     batch_size,
     max_memory,
+    nh_max=0,
+    nm_max=0,
+    pileup_mode="classic",
+    compute_tn5=True,
 ):
     """Log the pipeline configuration."""
 
@@ -400,6 +416,10 @@ def _log_configuration(
 
     logger.info("  Max strand bias:        %s", max_strand_bias)
     logger.info("  Min dist from end:      %sbp", min_distance_from_end)
+    logger.info("  NH max (multi-mapper):  %s", nh_max if nh_max > 0 else "disabled")
+    logger.info("  NM max (mismatches):    %s", nm_max if nm_max > 0 else "disabled")
+    logger.info("  Pileup mode:            %s", pileup_mode)
+    logger.info("  Compute Tn5 cuts:       %s", compute_tn5)
     logger.info("  Deduplication:          %s", dedup_display)
     logger.info("  Worker batch size:      %s cells", batch_msg)
 

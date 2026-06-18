@@ -13,6 +13,8 @@ class QualityThresholds:
     min_mapq: int = 30
     max_strand_bias: float = 1.0
     min_distance_from_end: int = 5
+    nh_max: int = 0  # 0 = disabled; 1 matches mgatk tenx default
+    nm_max: int = 0  # 0 = disabled; 4 matches mgatk tenx default
 
 
 @dataclass
@@ -74,6 +76,52 @@ class SimpleRead:
         return pairs
 
 
+@dataclass
+class WesConfig:
+    """Configuration for mgatk2 wes somatic mitochondrial variant calling."""
+
+    # Quality thresholds
+    min_baseq: int = 20
+    min_mapq: int = 20  # lower than sc — mito reads multi-map more in WES
+    min_distance_from_end: int = 5
+
+    # Mito genome
+    mito_chr: str = "chrM"
+    mito_length: int = 16569
+
+    # Depth thresholds
+    min_tumour_depth: int = 10
+    min_normal_depth: int = 5
+
+    # Variant AF thresholds
+    min_tumour_af: float = 0.005  # 0.5% — low heteroplasmy detection
+    max_normal_af: float = 0.10  # 10% — germline filter
+    min_tn_ratio: float = 3.0  # tumour VAF / normal VAF
+
+    # Strand bias for bulk (|fwd-rev| / (fwd+rev))
+    max_strand_bias: float = 0.9
+
+    # Minimum alt reads in tumour (absolute count guard)
+    min_tumour_alt_reads: int = 3
+
+    # Custom chrM-side blacklist BED (path to file). The bundled NuMT BEDs are
+    # nuclear positions (used for reference masking) and contain no chrM rows.
+    # Primary NuMT defence is min_mapq=20; supply a custom BED for chrM-side exclusions.
+    blacklist_build: str = "none"  # hg38 | hg19 | mm10 | mm9 | none
+    custom_blacklist: str | None = None  # path to custom chrM-side BED
+
+    def to_pipeline_config(self) -> "PipelineConfig":
+        """Create a PipelineConfig for use with PileupGenerator."""
+        return PipelineConfig(
+            min_baseq=self.min_baseq,
+            min_mapq=self.min_mapq,
+            min_distance_from_end=self.min_distance_from_end,
+            skip_deduplication=True,  # CLONK-WES CRAMs are already fgbio-deduplicated
+            mito_chr=self.mito_chr,
+            mito_length=self.mito_length,
+        )
+
+
 class PipelineConfig:
     """Pipeline configuration."""
 
@@ -93,10 +141,18 @@ class PipelineConfig:
         barcode_tag: str = "CB",
         mito_chr: str = "chrM",
         mito_length: int = 16569,
+        nh_max: int = 0,
+        nm_max: int = 0,
+        pileup_mode: str = "fast",
+        compute_tn5: bool = True,
         **kwargs,
     ):
         self.quality = QualityThresholds(
-            min_baseq=min_baseq, min_mapq=min_mapq, max_strand_bias=max_strand_bias
+            min_baseq=min_baseq,
+            min_mapq=min_mapq,
+            max_strand_bias=max_strand_bias,
+            nh_max=nh_max,
+            nm_max=nm_max,
         )
         self.dedup = DeduplicationConfig(
             skip=skip_deduplication, use_fragment_length=use_fragment_length_dedup
@@ -112,3 +168,5 @@ class PipelineConfig:
         self.barcode_tag = barcode_tag
         self.mito_chr = mito_chr
         self.mito_length = mito_length
+        self.pileup_mode = pileup_mode  # "classic" | "fast"
+        self.compute_tn5 = compute_tn5

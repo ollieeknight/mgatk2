@@ -14,7 +14,6 @@ from core.config import (
 )
 from core.exceptions import (
     BAMReadError,
-    InsufficientDataError,
     InvalidInputError,
     MgatkError,
     ProcessingError,
@@ -29,7 +28,7 @@ from utils.utils import (
     validate_barcode_file,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -48,7 +47,6 @@ __all__ = [
     "InvalidInputError",
     "ProcessingError",
     "BAMReadError",
-    "InsufficientDataError",
     # Core functionality
     "PileupGenerator",
     "MtDNAPipeline",

@@ -1,17 +1,16 @@
-.PHONY: setup format lint check test clean check-all
+.PHONY: setup format lint check test clean check-all benchmark benchmark-hdf5
 
 setup:
 	python3 -m venv .venv
 	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e . isort black ruff flake8
+	.venv/bin/pip install -e . ruff
 
 format:
-	.venv/bin/isort src/
-	.venv/bin/black src/
+	.venv/bin/ruff format src/
+	.venv/bin/ruff check --fix src/
 
 lint:
-	.venv/bin/ruff check --fix src/
-	.venv/bin/flake8 src/
+	.venv/bin/ruff check src/
 
 run:
 	.venv/bin/mgatk2 run --help
@@ -21,6 +20,13 @@ run:
 tenx:
 	.venv/bin/mgatk2 tenx --help
 	cd tests && ../.venv/bin/mgatk2 tenx -o tenx_output
+	cd tests && ../.venv/bin/mgatk2 run -o run_output
+
+benchmark:
+	cd tests && python benchmark.py
+
+benchmark-hdf5:
+	cd tests && python benchmark.py --format hdf5
 
 clean:
 	rm -rf build dist *.egg-info

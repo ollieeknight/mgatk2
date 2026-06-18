@@ -1,6 +1,16 @@
-# mgatk2: Mitochondrial Genome Analysis Toolkit v2
+# mgatk2: Mitochondrial Genome Analysis Toolkit v2 (v1.1)
 
 **mgatk2** is a reimplementation of the [original mgatk](https://github.com/caleblareau/mgatk) toolkit by [Caleb Lareau](https://github.com/caleblareau), optimised for processing mitochondrial DNA from single-cell ATAC-seq and other single-cell sequencing data. Tested with datasets of 200M chrM reads across 10k cells, this pipeline works well with datasets of all sizes.
+
+## Commands
+
+| Command | Use case |
+|---------|----------|
+| `mgatk2 run` | Single-cell BAM with cell barcodes (scATAC/scRNA) |
+| `mgatk2 tenx` | 10x Genomics outs/ directory (Signac-compatible) |
+| `mgatk2 call` | Bulk BAM, one file per cell (Smart-seq style) |
+| `mgatk2 wes` | **Somatic** mito variants from paired tumour/normal CRAMs (WES) |
+| `mgatk2 hardmask-fasta` | Hard-mask reference FASTA with NuMT blacklists |
 
 ## Key Improvements
 
@@ -127,9 +137,27 @@ Options:
                                         [default: alignment_and_fragment_length]
   -f, --format [txt|hdf5]               Output format: txt (text files) or hdf5 (fast binary)
                                         [default: hdf5]
+  --pileup-mode [classic|fast]          Pileup engine: fast (vectorised numpy, default) or classic (reference)
+                                        [default: fast]
+  --no-tn5                              Skip Tn5 cut site tracking. Use for non-ATAC assays (RNA-seq, WGS)
   --dry-run                             Show configuration and exit without processing (no output files created)
   --help                                Show this message and exit.
 ```
+
+### `mgatk2 tenx` - 10x Genomics / Signac
+
+```bash
+mgatk2 tenx --help
+```
+
+Key additional options vs `run`:
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--nh-max INTEGER` | 0 (off) | Filter multi-mappers by NH tag; set to `1` to match original mgatk |
+| `--nm-max INTEGER` | 0 (off) | Filter by edit distance (NM tag); set to `4` to match original mgatk |
+| `--pileup-mode` | fast | As above |
+| `--no-tn5` | — | As above |
 
 ### `mgatk2 call` - Bulk Analysis
 

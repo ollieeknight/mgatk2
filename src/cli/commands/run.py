@@ -34,6 +34,8 @@ def run(
     dedup_mode,
     output_format,
     dry_run,
+    pileup_mode,
+    compute_tn5,
 ):
     """Run mgatk2 with optimised defaults"""
     # Determine if processing should be sequential (auto-enabled when threads=1)
@@ -60,6 +62,8 @@ def run(
             output_format=output_format,
             sequential=sequential,
             dry_run=dry_run,
+            pileup_mode=pileup_mode,
+            compute_tn5=compute_tn5,
             original_bam_path=bam_path,
             report_title=get_10x_parent_directory_name(bam_path),
             report_subtitle="mgatk2 output analysis",
