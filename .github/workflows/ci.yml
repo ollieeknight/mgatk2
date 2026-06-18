@@ -29,11 +29,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
+
+    - name: Lint
+      run: |
+        pip install ruff
+        ruff check src/
+
   conda-build:
     runs-on: ubuntu-latest
     steps:
@@ -49,11 +54,11 @@ jobs:
     - name: Build conda package
       shell: bash -el {0}
       run: |
-        conda install conda-build -y
+        conda install -y conda-forge::conda-build
         conda build conda-recipe/ --output-folder dist/
-        
+
     - name: Test conda package installation
       shell: bash -el {0}
       run: |
-        conda install dist/*/mgatk2-*.tar.bz2 -y
+        conda install -y dist/*/mgatk2-*.tar.bz2
         mgatk2 --help

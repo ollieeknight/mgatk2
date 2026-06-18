@@ -71,15 +71,18 @@ class BAMReader:
         # Check if we're doing bulk calling
         is_bulk_mode = self.barcodes == {"bulk"}
 
-        # Track seen fragments per barcode for deduplication
-        seen_fragments_with_length: dict[str, set] = defaultdict(set)
-        seen_fragments_position_only: dict[str, set] = defaultdict(set)
+        # Track seen fragments per barcode for deduplication.
+        # Only build the selected set; second set only when DEBUG logging active.
+        use_frag = self.config.dedup.use_fragment_length
+        _debug = logger.isEnabledFor(logging.DEBUG)
+        seen_primary: dict[str, set] = defaultdict(set)
+        seen_secondary: dict[str, set] = defaultdict(set) if _debug else {}
 
         # Statistics tracking
         total_reads = 0
         filtered_reads = 0
-        duplicate_reads_with_length = 0
-        duplicate_reads_position_only = 0
+        duplicate_reads_primary = 0
+        duplicate_reads_secondary = 0
 
         try:
             with pysam.AlignmentFile(str(self.bam_path), "rb") as bam:
@@ -96,6 +99,19 @@ class BAMReader:
                     if read.is_unmapped or read.is_secondary or read.is_supplementary:
                         continue
 
+                    # NH/NM filters — matches mgatk filterClipBam.py:36-38
+                    if self.config.quality.nh_max > 0 and read.has_tag("NH"):
+                        if read.get_tag("NH") > self.config.quality.nh_max:
+                            continue
+                    if self.config.quality.nm_max > 0:
+                        nm = None
+                        if read.has_tag("NM"):
+                            nm = read.get_tag("NM")
+                        elif read.has_tag("nM"):
+                            nm = read.get_tag("nM")
+                        if nm is not None and nm > self.config.quality.nm_max:
+                            continue
+
                     if is_bulk_mode:
                         # For bulk calling, assign all reads to 'bulk' barcode
                         barcode = "bulk"
@@ -110,44 +126,35 @@ class BAMReader:
                         if barcode not in self.barcodes:
                             continue
 
-                    # Deduplication: mark duplicates based on alignment
-                    # position and strand
-                    # - alignment_start: (ref_start, is_reverse) - Picard
-                    # - alignment_and_fragment_length: adds template_length
-                    # Both in-memory; original mgatk used Picard (ext tool)
+                    # Deduplication: single set for the selected strategy.
+                    # Second set tracked only in DEBUG mode for comparative stats.
                     if not self.config.dedup.skip:
                         ref_start = read.reference_start
                         is_rev = read.is_reverse
-                        fragment_length_key = (
-                            ref_start,
-                            is_rev,
-                            abs(read.template_length) if read.template_length is not None else 0,
-                        )
-                        position_only_key = (ref_start, is_rev)
+                        tlen = abs(read.template_length) if read.template_length else 0
 
-                        # Check both methods for statistics
-                        is_fragment_length_dup = (
-                            fragment_length_key in seen_fragments_with_length[barcode]
-                        )
-                        is_position_only_dup = (
-                            position_only_key in seen_fragments_position_only[barcode]
-                        )
+                        if use_frag:
+                            primary_key = (ref_start, is_rev, tlen)
+                            is_dup = primary_key in seen_primary[barcode]
+                            seen_primary[barcode].add(primary_key)
+                            if _debug:
+                                alt_key = (ref_start, is_rev)
+                                if alt_key in seen_secondary[barcode]:
+                                    duplicate_reads_secondary += 1
+                                seen_secondary[barcode].add(alt_key)
+                        else:
+                            primary_key = (ref_start, is_rev)
+                            is_dup = primary_key in seen_primary[barcode]
+                            seen_primary[barcode].add(primary_key)
+                            if _debug:
+                                alt_key = (ref_start, is_rev, tlen)
+                                if alt_key in seen_secondary[barcode]:
+                                    duplicate_reads_secondary += 1
+                                seen_secondary[barcode].add(alt_key)
 
-                        # Add to both tracking sets
-                        seen_fragments_with_length[barcode].add(fragment_length_key)
-                        seen_fragments_position_only[barcode].add(position_only_key)
-
-                        # Count duplicates for both methods
-                        if is_fragment_length_dup:
-                            duplicate_reads_with_length += 1
-                        if is_position_only_dup:
-                            duplicate_reads_position_only += 1
-
-                        # Skip read only if duplicate by the SELECTED method
-                        if self.config.dedup.use_fragment_length and is_fragment_length_dup:
-                            continue  # Skip fragment-length duplicate
-                        if not self.config.dedup.use_fragment_length and is_position_only_dup:
-                            continue  # Skip position-only duplicate
+                        if is_dup:
+                            duplicate_reads_primary += 1
+                            continue
 
                     # Convert to lightweight SimpleRead
                     if read.query_qualities is not None:
@@ -165,7 +172,9 @@ class BAMReader:
                         cigar=read.cigartuples if read.cigartuples else [],
                         is_proper_pair=read.is_proper_pair,
                         is_paired=read.is_paired,
-                        template_length=read.template_length if read.template_length is not None else 0,
+                        template_length=(
+                            read.template_length if read.template_length is not None else 0
+                        ),
                     )
                     reads_by_barcode[barcode].append(simple_read)
                     filtered_reads += 1
@@ -174,16 +183,16 @@ class BAMReader:
             raise BAMReadError(str(self.bam_path), f"Read error: {e}") from e
 
         if not self.config.dedup.skip:
-            duplicates_removed = (
-                duplicate_reads_with_length
-                if self.config.dedup.use_fragment_length
-                else duplicate_reads_position_only
-            )
             logger.info(
                 "%d duplicate reads removed (%.1f%%)",
-                duplicates_removed,
-                duplicates_removed / total_reads * 100,
+                duplicate_reads_primary,
+                duplicate_reads_primary / total_reads * 100 if total_reads else 0,
             )
+            if _debug and duplicate_reads_secondary:
+                logger.debug(
+                    "Alt dedup strategy would have removed %d duplicates",
+                    duplicate_reads_secondary,
+                )
 
         logger.info(
             f"Kept {filtered_reads:,} reads from {len(reads_by_barcode):,} barcodes at an average of {filtered_reads / len(reads_by_barcode):.0f} reads/cell"
@@ -192,16 +201,16 @@ class BAMReader:
         )
 
         # Clear deduplication sets to free memory
-        del seen_fragments_with_length
-        del seen_fragments_position_only
+        del seen_primary
+        seen_secondary.clear()
 
         # Return reads directly in memory (no staging)
         stats = {
             "total_reads": total_reads,
             "filtered_reads": filtered_reads,
             "n_barcodes": len(reads_by_barcode),
-            "duplicate_reads_with_length": duplicate_reads_with_length,
-            "duplicate_reads_position_only": duplicate_reads_position_only,
+            "duplicate_reads_primary": duplicate_reads_primary,
+            "duplicate_reads_secondary": duplicate_reads_secondary,
         }
 
         return dict(reads_by_barcode), stats

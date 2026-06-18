@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgatk2"
-version = "1.0.0"
+version = "1.1.0"
 description = "Mitochondrial genome analysis toolkit for single-cell data"
 readme = "README.md"
 authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]
@@ -31,17 +31,6 @@ include = ["*"]
 
 [tool.setuptools.package-data]
 data = ["blacklists/*.bed", "references/*.fasta"]
-
-[tool.black]
-line-length = 100
-target-version = ['py310']
-skip-string-normalization = false
-
-[tool.isort]
-profile = "black"
-line_length = 100
-multi_line_output = 3
-known_first_party = ["mgatk2"]
 
 [tool.ruff]
 line-length = 100

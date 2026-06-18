@@ -27,6 +27,10 @@ def tenx(
     dedup_mode,
     output_format,
     dry_run,
+    nh_max,
+    nm_max,
+    pileup_mode,
+    compute_tn5,
 ):
     """Run mgatk2 with original mgatk package behaviour"""
     sequential = ncores == 1
@@ -51,4 +55,8 @@ def tenx(
         output_format=output_format,
         sequential=sequential,
         dry_run=dry_run,
+        nh_max=nh_max,
+        nm_max=nm_max,
+        pileup_mode=pileup_mode,
+        compute_tn5=compute_tn5,
     )

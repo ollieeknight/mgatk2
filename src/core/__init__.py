@@ -10,9 +10,6 @@ from .config import (
 from .exceptions import (
     BAMFormatError,
     BAMReadError,
-    HDF5ReadError,
-    HDF5WriteError,
-    InsufficientDataError,
     InvalidInputError,
     MgatkError,
     NoBarcodeTagsError,
@@ -36,10 +33,7 @@ __all__ = [
     "InvalidInputError",
     "ProcessingError",
     "BAMReadError",
-    "InsufficientDataError",
     "NoChrMReadsError",
     "NoBarcodeTagsError",
     "BAMFormatError",
-    "HDF5WriteError",
-    "HDF5ReadError",
 ]

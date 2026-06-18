@@ -92,12 +92,11 @@ variants <- identify_variants(mgatk_data)
 variants_filtered <- variants %>%
   filter(n_cells_conf_detected > 1)
 
-ggplot(variants_filtered, aes(x = strand_correlation, y = vmr, 
+ggplot(variants_filtered, aes(x = strand_correlation, y = vmr,
                               colour = strand_correlation >= 0.65 & vmr > 0.1)) +
   geom_hline(yintercept = 0.10, linetype = "dashed", colour = "black") +
   geom_vline(xintercept = 0.65, linetype = "dashed", colour = "black") +
   geom_point(alpha = 1) +
-  scale_y_log10() +
   scale_colour_manual(values = c("FALSE" = "black", "TRUE" = "darkred")) +
   labs(
     title = NULL,
@@ -106,8 +105,8 @@ ggplot(variants_filtered, aes(x = strand_correlation, y = vmr,
   ) +
   theme_classic() +
   theme(legend.position = "none") +
-  scale_x_continuous(expand = c(0,0), limits = c(0, 1.01)) +
-  scale_y_continuous(expand = c(0,0), limits = c(0, 1))
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 1.01)) +
+  scale_y_log10(expand = c(0, 0))
 
 variants_hq <- variants %>%
   filter(

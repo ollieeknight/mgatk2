@@ -3,6 +3,7 @@
 import gc
 import logging
 import multiprocessing as mp
+import platform
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
@@ -12,9 +13,9 @@ from processing.pileup import PileupGenerator
 
 logger = logging.getLogger(__name__)
 
-# Use spawn context on HPC/cluster environments for better stability
-# Fork can have issues with certain file handles and threading on HPC
-MP_CONTEXT = "spawn"
+# fork on Linux: copy-on-write, no re-import cost, no pickle roundtrip for reads.
+# spawn on macOS: fork is unsafe with Objective-C runtime (Python 3.12+).
+MP_CONTEXT = "fork" if platform.system() == "Linux" else "spawn"
 
 
 def process_barcode_worker(args):
@@ -97,9 +98,24 @@ class CellProcessor:
             logger.info("Sequential processing enabled via config")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
-        # For datasets with high reads per cell, use sequential to avoid memory issues
-        if avg > 2500:
-            logger.info(f"High reads per cell ({avg:.0f} > 2500), using sequential processing")
+        # Sequential fallback: threshold on avg bases/cell, not reads/cell.
+        # Scales correctly for long reads (1000bp) vs short reads (100bp).
+        sample_cells = [reads_by_barcode[b] for b in barcodes[:20] if reads_by_barcode[b]]
+        if sample_cells:
+            sample_reads = [r for cell in sample_cells for r in cell]
+            avg_read_len = (
+                sum(len(r.query_sequence) for r in sample_reads) / len(sample_reads)
+                if sample_reads
+                else 100
+            )
+        else:
+            avg_read_len = 100
+        avg_bases = avg * avg_read_len
+        if avg_bases > 250_000:  # ~2500 reads × 100bp; scales for long reads
+            logger.info(
+                f"High bases/cell ({avg_bases:.0f} > 250k, ~{avg:.0f} reads × {avg_read_len:.0f}bp), "
+                "using sequential processing"
+            )
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
 
         return self._process_parallel(
