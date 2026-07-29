@@ -2,16 +2,25 @@
 
 import base64
 import logging
+import os
 import subprocess
+import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
 import h5py
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 
+_cache_root = Path(tempfile.gettempdir()) / "mgatk2-cache"
+os.environ.setdefault("MPLCONFIGDIR", str(_cache_root / "matplotlib"))
+os.environ.setdefault("XDG_CACHE_HOME", str(_cache_root))
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+
+import matplotlib  # noqa: E402
+
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
@@ -20,24 +29,18 @@ logger = logging.getLogger(__name__)
 
 
 def get_environment_info():
-    """Collect conda and pip package versions for the report"""
-    env_info = {"conda": "", "pip": ""}
-
-    # Try to get conda list
+    """Collect installed Python packages for the report."""
+    env_info = {"pip": ""}
     try:
-        result = subprocess.run(["conda", "list"], capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            env_info["conda"] = result.stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.debug("Could not get conda list: %s", e)
-        env_info["conda"] = "conda not available"
-
-    # Try to get pip list
-    try:
-        result = subprocess.run(["pip", "list"], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "list"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         if result.returncode == 0:
             env_info["pip"] = result.stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+    except Exception as e:
         logger.debug("Could not get pip list: %s", e)
         env_info["pip"] = "pip not available"
 
@@ -82,9 +85,8 @@ def create_coverage_plot(coverage, positions=None):
 
 
 def create_transposition_frequency_plot(counts_file):
-    """Create mirrored transposition frequency plot"""
+    """Create a mirrored transposition frequency plot."""
     with h5py.File(counts_file, "r") as f:
-        # Sum Tn5 cut sites across all cells for each strand
         tn5_fwd = f["tn5_cuts_fwd"][:, :].sum(axis=1).astype(np.int64)
         tn5_rev = f["tn5_cuts_rev"][:, :].sum(axis=1).astype(np.int64)
         n_positions = len(tn5_fwd)
@@ -93,7 +95,6 @@ def create_transposition_frequency_plot(counts_file):
 
     fig, ax = plt.subplots(figsize=(10, 3.5))
 
-    # Plot forward strand above x-axis (positive)
     ax.fill_between(
         positions,
         0,
@@ -103,7 +104,6 @@ def create_transposition_frequency_plot(counts_file):
         alpha=0.6,
         label="Forward",
     )
-    # Plot reverse strand below x-axis (negative)
     ax.fill_between(
         positions,
         0,
@@ -129,9 +129,8 @@ def create_transposition_frequency_plot(counts_file):
 
 
 def create_read_start_sites_plot(metadata_file):
-    """Create read start sites plot for scRNA-seq data (positive y-axis only)"""
+    """Create a read-start plot for scRNA-seq data."""
     with h5py.File(metadata_file, "r") as f:
-        # Sum coverage across all cells to get total read starts at each position
         coverage = f["coverage"][:, :].sum(axis=1).astype(np.int64)
         n_positions = len(coverage)
 
@@ -139,7 +138,6 @@ def create_read_start_sites_plot(metadata_file):
 
     fig, ax = plt.subplots(figsize=(10, 3.5))
 
-    # Plot read start sites as positive values only
     ax.fill_between(
         positions,
         0,
@@ -162,7 +160,7 @@ def create_read_start_sites_plot(metadata_file):
 
 
 def create_tn5_insertion_context_plot(counts_file, metadata_file):
-    """Create bar plot showing dinucleotide context of Tn5 insertion sites"""
+    """Plot the dinucleotide context of Tn5 insertion sites."""
     with h5py.File(counts_file, "r") as f:
         tn5_fwd = f["tn5_cuts_fwd"][:, :].sum(axis=1).astype(np.int64)
         tn5_rev = f["tn5_cuts_rev"][:, :].sum(axis=1).astype(np.int64)
@@ -174,17 +172,14 @@ def create_tn5_insertion_context_plot(counts_file, metadata_file):
         else:
             refallele = list(refallele)
 
-    # Combine forward and reverse Tn5 cuts
     total_tn5 = tn5_fwd + tn5_rev
 
-    # Count dinucleotide contexts at Tn5 insertion sites
     dinuc_counts = {}
     bases = ["A", "C", "G", "T"]
     for b1 in bases:
         for b2 in bases:
             dinuc_counts[f"{b1}{b2}"] = 0
 
-    # For each position with Tn5 cuts, get the dinucleotide context
     for pos in range(len(total_tn5) - 1):
         if total_tn5[pos] > 0:
             base1 = refallele[pos]
@@ -193,11 +188,9 @@ def create_tn5_insertion_context_plot(counts_file, metadata_file):
             if dinuc in dinuc_counts:
                 dinuc_counts[dinuc] += total_tn5[pos]
 
-    # Sort by dinucleotide for consistent ordering
     dinucs = sorted(dinuc_counts.keys())
     counts = [dinuc_counts[d] for d in dinucs]
 
-    # Calculate percentages
     total_cuts = sum(counts)
     if total_cuts == 0:
         logger.warning("No Tn5 cuts found for insertion context plot")
@@ -216,10 +209,8 @@ def create_tn5_insertion_context_plot(counts_file, metadata_file):
 
     percentages = [(c / total_cuts) * 100 for c in counts]
 
-    # Create bar plot
     fig, ax = plt.subplots(figsize=(8, 4))
 
-    # Color by base composition
     colors = []
     for dinuc in dinucs:
         gc_content = (dinuc.count("G") + dinuc.count("C")) / 2
@@ -242,10 +233,9 @@ def create_tn5_insertion_context_plot(counts_file, metadata_file):
     ax.spines["bottom"].set_color("black")
     plt.xticks(rotation=45, ha="right")
 
-    # Add value labels on bars
     for bar, pct in zip(bars, percentages, strict=True):
         height = bar.get_height()
-        if height > 0.5:  # Only show label if bar is visible
+        if height > 0.5:
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
                 height,
@@ -262,12 +252,11 @@ def create_tn5_insertion_context_plot(counts_file, metadata_file):
 
 
 def create_depth_vs_coverage_plot(metadata_file):
-    """Coverage v s mtDNA depth plot"""
+    """Plot coverage breadth against mean mtDNA depth."""
     with h5py.File(metadata_file, "r") as f:
         mean_depth = f["mean_depth"][:]
         genome_coverage = f["genome_coverage"][:]
 
-    # Filter out zeros
     mask = (mean_depth > 0) & (genome_coverage > 0)
     mean_depth = mean_depth[mask]
     genome_coverage = genome_coverage[mask]
@@ -279,8 +268,8 @@ def create_depth_vs_coverage_plot(metadata_file):
             0.5,
             0.5,
             "No data available",
-            ha="centre",
-            va="centre",
+            ha="center",
+            va="center",
             fontsize=14,
             color="gray",
         )
@@ -298,31 +287,27 @@ def create_depth_vs_coverage_plot(metadata_file):
     ax.set_xlim(0, 105)
 
     return plot_to_base64(fig)
-    return plot_to_base64(fig)
 
 
 def create_depth_vs_fragments_plot(metadata_file):
-    """depth vs total fragments plot"""
+    """Plot mtDNA depth against total fragments."""
     with h5py.File(metadata_file, "r") as f:
         mtdna_depth = f["mean_depth"][:]
         total_fragments = f["barcode_metadata"]["total"][:]
 
-    # Filter out zeros
     mask = (mtdna_depth > 0) & (total_fragments > 0)
     mtdna_depth = mtdna_depth[mask]
     total_fragments = total_fragments[mask]
 
-    # Check if we have data
     if len(mtdna_depth) == 0:
         logger.warning("No valid data for depth vs fragments plot")
-        # Return placeholder
         fig, ax = plt.subplots(figsize=(6, 5))
         ax.text(
             0.5,
             0.5,
             "No data available\n(all values are zero)",
-            ha="centre",
-            va="centre",
+            ha="center",
+            va="center",
             fontsize=14,
             color="gray",
         )
@@ -345,13 +330,11 @@ def create_depth_vs_fragments_plot(metadata_file):
     ax.spines["left"].set_color("black")
     ax.spines["bottom"].set_color("black")
 
-    # Set specific y-axis tick positions and labels
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
     yticks = [1, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000, 5000, 10000]
     ax.yaxis.set_major_locator(FixedLocator(yticks))
 
-    # Format tick labels
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x):,}"))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda y, p: f"{int(y):,}"))
 
@@ -359,30 +342,27 @@ def create_depth_vs_fragments_plot(metadata_file):
 
 
 def create_reads_vs_depth_plot(metadata_file):
-    """Number of reads vs mtDNA depth plot for scRNA-seq"""
+    """Plot estimated read count against mtDNA depth for scRNA-seq."""
     with h5py.File(metadata_file, "r") as f:
         mtdna_depth = f["mean_depth"][:]
         total_bases = f["total_bases"][:]
 
-    # Estimate number of reads from total_bases (assuming ~150bp read length for scRNA-seq)
+    # total_bases does not record read count; 150 bp is a useful scRNA-seq estimate.
     n_reads = total_bases / 150.0
 
-    # Filter out zeros
     mask = (mtdna_depth > 0) & (n_reads > 0)
     mtdna_depth = mtdna_depth[mask]
     n_reads = n_reads[mask]
 
-    # Check if we have data
     if len(mtdna_depth) == 0:
         logger.warning("No valid data for reads vs depth plot")
-        # Return placeholder
         fig, ax = plt.subplots(figsize=(6, 5))
         ax.text(
             0.5,
             0.5,
             "No data available\n(all values are zero)",
-            ha="centre",
-            va="centre",
+            ha="center",
+            va="center",
             fontsize=14,
             color="gray",
         )
@@ -405,13 +385,11 @@ def create_reads_vs_depth_plot(metadata_file):
     ax.spines["left"].set_color("black")
     ax.spines["bottom"].set_color("black")
 
-    # Set specific y-axis tick positions and labels
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
     yticks = [1, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000, 5000, 10000]
     ax.yaxis.set_major_locator(FixedLocator(yticks))
 
-    # Format tick labels
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x):,}"))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda y, p: f"{int(y):,}"))
 
@@ -426,27 +404,20 @@ def generate_html_report(
     working_directory: str | None = None,
     input_dir: str | None = None,
 ):
-    """Generate HTML report with QC plots"""
+    """Generate an HTML report with QC plots."""
     output_dir = Path(output_dir)
 
-    # Auto-detect title from 10X run folder if not provided
     if title is None and input_dir is not None:
         input_path = Path(input_dir)
-        # Check if this is a 10X structure (has 'outs' folder)
         if input_path.name == "outs":
-            # Use parent folder name (the actual 10X run name)
             title = input_path.parent.name
         elif (input_path / "outs").exists():
-            # Input dir is the 10X run folder itself
             title = input_path.name
         else:
-            # Fallback to input directory name
             title = input_path.name
 
-    # Auto-detect from working directory if input_dir not provided
     elif title is None and working_directory is not None:
         work_path = Path(working_directory)
-        # Look for 10X structure indicators
         if work_path.name == "outs":
             title = work_path.parent.name
         elif (work_path / "outs").exists():
@@ -454,10 +425,8 @@ def generate_html_report(
         elif work_path.parent.name == "outs":
             title = work_path.parent.parent.name
         else:
-            # Use working directory name
             title = work_path.name
 
-    # Fallback to sample_name if still no title
     if title is None:
         title = sample_name
 
@@ -468,7 +437,6 @@ def generate_html_report(
         logger.error("Output files not found in %s", output_dir)
         return None
 
-    # Load data and create plots
     with h5py.File(metadata_file, "r") as f:
         coverage = f["coverage"][:]
     coverage_plot = create_coverage_plot(coverage)
@@ -481,14 +449,12 @@ def generate_html_report(
 
     depth_vs_coverage_plot = create_depth_vs_coverage_plot(metadata_file)
 
-    # Load summary statistics
     with h5py.File(metadata_file, "r") as f:
         n_cells = len(f["mean_depth"][:])
         mean_depth_vals = f["mean_depth"][:]
 
         mean_depth = mean_depth_vals.mean()
 
-    # Read summary file if exists
     summary_file = output_dir / "qc" / "summary.txt"
     summary_stats = {}
     if summary_file.exists():
@@ -498,21 +464,17 @@ def generate_html_report(
                     key, value = line.split(":", 1)
                     summary_stats[key.strip()] = value.strip()
 
-    # Use current date/time in dd/mm/yyyy, HH:MM format
     from datetime import datetime
 
     run_date = datetime.now().strftime("%d/%m/%Y, %H:%M")
 
-    # Set default title and subtitle if not provided
     if title is None:
         title = sample_name
     if subtitle is None:
         subtitle = "mgatk2 output analysis"
 
-    # Get environment info for version section
     env_info = get_environment_info()
 
-    # Generate HTML
     html_content = f"""
 <!DOCTYPE html>
 <html>
@@ -696,13 +658,9 @@ def generate_html_report(
         </div>
 
         <div class="version-info">
-            <h3>Environment Information</h3>
+            <h3>Environment information</h3>
             <details>
-                <summary style="cursor: pointer; font-weight: bold;">Conda Packages</summary>
-                <pre>{env_info["conda"]}</pre>
-            </details>
-            <details>
-                <summary style="cursor: pointer; font-weight: bold;">Pip Packages</summary>
+                <summary style="cursor: pointer; font-weight: bold;">Python packages</summary>
                 <pre>{env_info["pip"]}</pre>
             </details>
         </div>
@@ -711,7 +669,6 @@ def generate_html_report(
 </html>
 """
 
-    # Write HTML file
     report_file = output_dir / "mgatk2_report.html"
     with open(report_file, "w") as f:
         f.write(html_content)
@@ -727,27 +684,20 @@ def generate_scrna_html_report(
     working_directory: str | None = None,
     input_dir: str | None = None,
 ):
-    """Generate HTML report for scRNA-seq data (without singlecell.csv)"""
+    """Generate an HTML report for scRNA-seq data."""
     output_dir = Path(output_dir)
 
-    # Auto-detect title from 10X run folder if not provided
     if title is None and input_dir is not None:
         input_path = Path(input_dir)
-        # Check if this is a 10X structure (has 'outs' folder)
         if input_path.name == "outs":
-            # Use parent folder name (the actual 10X run name)
             title = input_path.parent.name
         elif (input_path / "outs").exists():
-            # Input dir is the 10X run folder itself
             title = input_path.name
         else:
-            # Fallback to input directory name
             title = input_path.name
 
-    # Auto-detect from working directory if input_dir not provided
     elif title is None and working_directory is not None:
         work_path = Path(working_directory)
-        # Look for 10X structure indicators
         if work_path.name == "outs":
             title = work_path.parent.name
         elif (work_path / "outs").exists():
@@ -755,10 +705,8 @@ def generate_scrna_html_report(
         elif work_path.parent.name == "outs":
             title = work_path.parent.parent.name
         else:
-            # Use working directory name
             title = work_path.name
 
-    # Fallback to sample_name if still no title
     if title is None:
         title = sample_name
 
@@ -769,27 +717,22 @@ def generate_scrna_html_report(
         logger.error("Output files not found in %s", output_dir)
         return None
 
-    # Load data and create plots
     with h5py.File(metadata_file, "r") as f:
         coverage = f["coverage"][:]
     coverage_plot = create_coverage_plot(coverage)
 
-    # Use read start sites instead of Tn5 transposition
     read_starts_plot = create_read_start_sites_plot(metadata_file)
 
-    # Use reads vs depth instead of fragments vs depth
     reads_depth_plot = create_reads_vs_depth_plot(metadata_file)
 
     depth_vs_coverage_plot = create_depth_vs_coverage_plot(metadata_file)
 
-    # Load summary statistics
     with h5py.File(metadata_file, "r") as f:
         n_cells = len(f["mean_depth"][:])
         mean_depth_vals = f["mean_depth"][:]
 
         mean_depth = mean_depth_vals.mean()
 
-    # Read summary file if exists
     summary_file = output_dir / "qc" / "summary.txt"
     summary_stats = {}
     if summary_file.exists():
@@ -799,21 +742,17 @@ def generate_scrna_html_report(
                     key, value = line.split(":", 1)
                     summary_stats[key.strip()] = value.strip()
 
-    # Use current date/time in dd/mm/yyyy, HH:MM format
     from datetime import datetime
 
     run_date = datetime.now().strftime("%d/%m/%Y, %H:%M")
 
-    # Set default title and subtitle if not provided
     if title is None:
         title = sample_name
     if subtitle is None:
         subtitle = "mgatk2 scRNA-seq output analysis"
 
-    # Get environment info for version section
     env_info = get_environment_info()
 
-    # Generate HTML
     html_content = f"""
 <!DOCTYPE html>
 <html>
@@ -989,13 +928,9 @@ def generate_scrna_html_report(
         </div>
 
         <div class="version-info">
-            <h3>Environment Information</h3>
+            <h3>Environment information</h3>
             <details>
-                <summary style="cursor: pointer; font-weight: bold;">Conda Packages</summary>
-                <pre>{env_info["conda"]}</pre>
-            </details>
-            <details>
-                <summary style="cursor: pointer; font-weight: bold;">Pip Packages</summary>
+                <summary style="cursor: pointer; font-weight: bold;">Python packages</summary>
                 <pre>{env_info["pip"]}</pre>
             </details>
         </div>
@@ -1004,7 +939,6 @@ def generate_scrna_html_report(
 </html>
 """
 
-    # Write HTML file
     report_file = output_dir / "mgatk2_report.html"
     with open(report_file, "w") as f:
         f.write(html_content)
