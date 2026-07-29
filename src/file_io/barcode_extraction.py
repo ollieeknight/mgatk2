@@ -21,12 +21,10 @@ def extract_barcodes_from_bam(
     try:
         bam = pysam.AlignmentFile(bam_path, "rb")
 
-        # Scan mitochondrial reads
         for read in bam.fetch(mito_chr):
             if read.is_unmapped or read.is_duplicate:
                 continue
 
-            # Get barcode from tag
             if read.has_tag(barcode_tag):
                 barcode = str(read.get_tag(barcode_tag))
                 barcode_counts[barcode] = barcode_counts.get(barcode, 0) + 1
