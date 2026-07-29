@@ -1,4 +1,6 @@
 FROM python:3.10-slim
 
-COPY . /opt/mgatk2
-RUN pip install --no-cache-dir /opt/mgatk2
+WORKDIR /opt/mgatk2
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir . && mgatk2 paired --help
