@@ -10,7 +10,6 @@ to confirm correctness. Prints a summary table.
 
 import argparse
 import gzip
-import os
 import platform
 import resource
 import shutil
@@ -19,15 +18,19 @@ import sys
 import time
 from pathlib import Path
 
-
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent
-# Prefer venv binary (dev), fall back to PATH (conda/module on HPC)
+# Prefer the project environment, then fall back to PATH.
 _venv_bin = REPO_ROOT / ".venv" / "bin" / "mgatk2"
 MGATK2 = _venv_bin if _venv_bin.exists() else Path(shutil.which("mgatk2") or "mgatk2")
-OUTS = SCRIPT_DIR / "outs"
-TXT_FILES = ["output.A.txt.gz", "output.C.txt.gz", "output.G.txt.gz",
-             "output.T.txt.gz", "output.coverage.txt.gz"]
+OUTS = REPO_ROOT / ".test-work" / "outs"
+TXT_FILES = [
+    "output.A.txt.gz",
+    "output.C.txt.gz",
+    "output.G.txt.gz",
+    "output.T.txt.gz",
+    "output.coverage.txt.gz",
+]
 
 
 def run_mode(mode: str, out_dir: Path, fmt: str, extra_args: list[str]) -> tuple[float, int]:
@@ -36,11 +39,16 @@ def run_mode(mode: str, out_dir: Path, fmt: str, extra_args: list[str]) -> tuple
         shutil.rmtree(out_dir)
 
     cmd = [
-        str(MGATK2), "run",
-        "-i", str(OUTS),
-        "-o", str(out_dir),
-        "-f", fmt,
-        "--pileup-mode", mode,
+        str(MGATK2),
+        "run",
+        "-i",
+        str(OUTS),
+        "-o",
+        str(out_dir),
+        "-f",
+        fmt,
+        "--pileup-mode",
+        mode,
         *extra_args,
     ]
 
@@ -119,15 +127,15 @@ def count_cells(out_dir: Path) -> int:
 
 def print_table(rows: list[dict]):
     labels = [
-        ("Pileup mode",       "mode"),
-        ("Wall time (s)",     "wall"),
-        ("Peak RSS (MB)",     "rss"),
-        ("Cells processed",   "cells"),
-        ("Output match",      "match"),
-        ("Max count diff",    "max_diff"),
-        ("Mismatches",        "mismatches"),
+        ("Pileup mode", "mode"),
+        ("Wall time (s)", "wall"),
+        ("Peak RSS (MB)", "rss"),
+        ("Cells processed", "cells"),
+        ("Output match", "match"),
+        ("Max count diff", "max_diff"),
+        ("Mismatches", "mismatches"),
     ]
-    col_w = max(len(l) for l, _ in labels) + 2
+    col_w = max(len(label) for label, _ in labels) + 2
     val_w = 14
 
     sep = "+" + "-" * (col_w + 2) + "+" + (("+" + "-" * (val_w + 2)) * len(rows)) + "+"
@@ -163,12 +171,14 @@ def main():
     args = parser.parse_args()
 
     if not MGATK2.exists() and not shutil.which("mgatk2"):
-        sys.exit("mgatk2 not found — activate conda env or run `make setup`")
+        sys.exit("mgatk2 not found — activate the environment or run `make setup`")
     if not OUTS.exists():
         sys.exit(f"Test data not found at {OUTS}")
 
-    print(f"\nmgatk2 pileup benchmark")
-    print(f"  Platform: {platform.system()} {platform.machine()} | Python {platform.python_version()}")
+    print("\nmgatk2 pileup benchmark")
+    print(
+        f"  Platform: {platform.system()} {platform.machine()} | Python {platform.python_version()}"
+    )
     print(f"  Format:   {args.format}")
     print(f"  Runs:     {args.runs}")
     print(f"  Extra:    {args.extra or 'none'}")
@@ -192,8 +202,17 @@ def main():
                 best_rss = rss
 
         cells = count_cells(out_dir)
-        results.append({"mode": mode, "wall": best_wall, "rss": best_rss,
-                         "cells": cells, "match": "—", "max_diff": "—", "mismatches": "—"})
+        results.append(
+            {
+                "mode": mode,
+                "wall": best_wall,
+                "rss": best_rss,
+                "cells": cells,
+                "match": "—",
+                "max_diff": "—",
+                "mismatches": "—",
+            }
+        )
 
     # diff outputs (txt mode only; hdf5 diff is more complex)
     if args.format == "txt":
