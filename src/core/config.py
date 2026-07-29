@@ -1,6 +1,7 @@
 """Configuration classes."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy
 
@@ -49,6 +50,13 @@ class SimpleRead:
     is_proper_pair: bool = False
     is_paired: bool = False
     template_length: int = 0
+    query_name: str = ""
+    reference_end: int = 0
+    is_read1: bool = False
+    is_read2: bool = False
+    is_qcfail: bool = False
+    is_duplicate: bool = False
+    read_group: str | None = None
 
     def get_aligned_pairs(self) -> list[tuple[int, int]]:
         """Get aligned (query_pos, ref_pos) pairs."""
@@ -77,49 +85,64 @@ class SimpleRead:
 
 
 @dataclass
-class WesConfig:
-    """Configuration for mgatk2 wes somatic mitochondrial variant calling."""
+class PairedConfig:
+    """Configuration for query/baseline mitochondrial evidence analysis."""
 
-    # Quality thresholds
+    query: str
+    baseline: str
+    reference: str
+    output: str
+    sample_name: str
     min_baseq: int = 20
-    min_mapq: int = 20  # lower than sc — mito reads multi-map more in WES
+    min_mapq: int = 20
     min_distance_from_end: int = 5
-
-    # Mito genome
     mito_chr: str = "chrM"
-    mito_length: int = 16569
-
-    # Depth thresholds
-    min_tumour_depth: int = 10
-    min_normal_depth: int = 5
-
-    # Variant AF thresholds
-    min_tumour_af: float = 0.005  # 0.5% — low heteroplasmy detection
-    max_normal_af: float = 0.10  # 10% — germline filter
-    min_tn_ratio: float = 3.0  # tumour VAF / normal VAF
-
-    # Strand bias for bulk (|fwd-rev| / (fwd+rev))
+    deduplication: str = "alignment_and_fragment_length"
+    min_query_depth: int = 10
+    min_baseline_depth: int = 5
+    min_alt_observations: int = 3
+    min_query_af: float = 0.005
+    max_baseline_af: float = 0.01
+    min_query_baseline_ratio: float = 3.0
     max_strand_bias: float = 0.9
+    custom_blacklist: str | None = None
+    input_is_consensus: bool = False
+    shifted_reference_supplied: bool = False
+    circular_edge_bases: int = 500
+    evidence_schema_version: str = "1.0"
+    candidate_schema_version: str = "1.0"
+    qc_schema_version: str = "1.0"
+    write_legacy_tsv: bool = True
 
-    # Minimum alt reads in tumour (absolute count guard)
-    min_tumour_alt_reads: int = 3
-
-    # Custom chrM-side blacklist BED (path to file). The bundled NuMT BEDs are
-    # nuclear positions (used for reference masking) and contain no chrM rows.
-    # Primary NuMT defence is min_mapq=20; supply a custom BED for chrM-side exclusions.
-    blacklist_build: str = "none"  # hg38 | hg19 | mm10 | mm9 | none
-    custom_blacklist: str | None = None  # path to custom chrM-side BED
-
-    def to_pipeline_config(self) -> "PipelineConfig":
-        """Create a PipelineConfig for use with PileupGenerator."""
-        return PipelineConfig(
-            min_baseq=self.min_baseq,
-            min_mapq=self.min_mapq,
-            min_distance_from_end=self.min_distance_from_end,
-            skip_deduplication=True,  # CLONK-WES CRAMs are already fgbio-deduplicated
-            mito_chr=self.mito_chr,
-            mito_length=self.mito_length,
-        )
+    def __post_init__(self) -> None:
+        for name in (
+            "min_baseq",
+            "min_mapq",
+            "min_distance_from_end",
+            "min_query_depth",
+            "min_baseline_depth",
+            "min_alt_observations",
+            "circular_edge_bases",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        for name in ("min_query_af", "max_baseline_af", "max_strand_bias"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.min_query_baseline_ratio <= 0:
+            raise ValueError("min_query_baseline_ratio must be positive")
+        if self.deduplication not in {
+            "alignment_and_fragment_length",
+            "alignment_start",
+            "none",
+        }:
+            raise ValueError(f"Unsupported deduplication mode: {self.deduplication}")
+        if Path(self.query).resolve() == Path(self.baseline).resolve():
+            raise ValueError("query and baseline must be different files")
+        if not self.sample_name or any(c in self.sample_name for c in "/\\"):
+            raise ValueError("sample_name must be a non-empty filename prefix")
+        if self.input_is_consensus and self.deduplication != "none":
+            raise ValueError("consensus inputs require --deduplication none")
 
 
 class PipelineConfig:
@@ -130,6 +153,7 @@ class PipelineConfig:
         min_baseq: int = 20,
         min_mapq: int = 30,
         max_strand_bias: float = 0.9,
+        min_distance_from_end: int = 5,
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,
         n_cores: int = 8,
@@ -145,12 +169,12 @@ class PipelineConfig:
         nm_max: int = 0,
         pileup_mode: str = "fast",
         compute_tn5: bool = True,
-        **kwargs,
     ):
         self.quality = QualityThresholds(
             min_baseq=min_baseq,
             min_mapq=min_mapq,
             max_strand_bias=max_strand_bias,
+            min_distance_from_end=min_distance_from_end,
             nh_max=nh_max,
             nm_max=nm_max,
         )
