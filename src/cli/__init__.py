@@ -3,15 +3,14 @@
 import logging
 
 from .base import cli, main
-from .commands import call, hardmask_fasta, run, tenx, wes
+from .commands import call, hardmask_fasta, paired, run, tenx, wes
 
-# Setup logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Register commands in desired help order
 cli.add_command(run)
 cli.add_command(tenx)
 cli.add_command(call)
+cli.add_command(paired)
 cli.add_command(wes)
 cli.add_command(hardmask_fasta)
 
