@@ -1,0 +1,4 @@
+include Dockerfile
+include Makefile
+recursive-include R *.R *.md
+recursive-include tests *.py
