@@ -104,7 +104,7 @@ class PileupGenerator:
         return self._build_pileup_dict(base_counts, tn5_cuts)
 
     def _generate_pileup_fast(self, reads: list[SimpleRead]) -> dict[int, dict[str, int]]:
-        """Vectorized numpy pileup. Replaces inner per-base loop with boolean masking."""
+        """Use NumPy masks in place of the inner per-base loop."""
         mito_length = self.config.mito_length
         base_counts = np.zeros((mito_length, 4, 2), dtype=np.uint32)
         compute_tn5 = getattr(self.config, "compute_tn5", True)
@@ -114,7 +114,6 @@ class PileupGenerator:
         min_baseq = self.config.quality.min_baseq
         min_dist = self.config.quality.min_distance_from_end
 
-        # ASCII values for A C G T
         base_ascii = ((65, 0), (67, 1), (71, 2), (84, 3))
 
         for read in reads:
@@ -149,26 +148,21 @@ class PileupGenerator:
                         ref_pos += length
                         continue
 
-                    # query slice bounds accounting for ref clamping
                     q_off = r_start - ref_pos
                     run_len = r_end - r_start
                     q_start = query_pos + q_off
                     q_end = q_start + run_len
 
-                    # zero-copy numpy views over the bytes/array slices
                     q_bytes = np.frombuffer(sequence[q_start:q_end], dtype=np.uint8)
                     q_quals = qualities[q_start:q_end]
 
-                    # quality mask
                     valid = q_quals >= min_baseq
 
-                    # distance-from-end mask (absolute query positions)
                     if min_dist > 0:
                         abs_qpos = np.arange(q_start, q_end, dtype=np.int32)
                         dist_mask = (abs_qpos >= min_dist) & (abs_qpos < read_length - min_dist)
                         valid = valid & dist_mask
 
-                    # per-base scatter: 4 boolean ops instead of run_len Python iterations
                     for b_ascii, b_idx in base_ascii:
                         hits = valid & (q_bytes == b_ascii)
                         if hits.any():
