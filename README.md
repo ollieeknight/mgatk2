@@ -1,239 +1,162 @@
-# mgatk2: Mitochondrial Genome Analysis Toolkit v2 (v1.1)
+# mgatk2
 
-**mgatk2** is a reimplementation of the [original mgatk](https://github.com/caleblareau/mgatk) toolkit by [Caleb Lareau](https://github.com/caleblareau), optimised for processing mitochondrial DNA from single-cell ATAC-seq and other single-cell sequencing data. Tested with datasets of 200M chrM reads across 10k cells, this pipeline works well with datasets of all sizes.
-
-## Commands
-
-| Command | Use case |
-|---------|----------|
-| `mgatk2 run` | Single-cell BAM with cell barcodes (scATAC/scRNA) |
-| `mgatk2 tenx` | 10x Genomics outs/ directory (Signac-compatible) |
-| `mgatk2 call` | Bulk BAM, one file per cell (Smart-seq style) |
-| `mgatk2 wes` | **Somatic** mito variants from paired tumour/normal CRAMs (WES) |
-| `mgatk2 hardmask-fasta` | Hard-mask reference FASTA with NuMT blacklists |
-
-## Key Improvements
-
-- **FASTA file hardmasking**: Mask regions of the genome highly similar to mitochondrial DNA, improving mapping quality
-- **Python implementation**: Removed Snakemake and Java dependencies
-- **HDF5 output format**: Fast binary storage with compression for efficient data access and analysis in R/Python
-- **Stringent deduplication**: Fragment-length aware deduplication alongside position and strand as in original
-- **Optimised performance**: Parallel processing with efficient memory management
-- **HTML QC reports**: Automatic generation of quality control visualisations
+mgatk2 is a Python toolkit for mitochondrial genotyping from single-cell and
+paired bulk sequencing data. It reimplements the core workflow of
+[mgatk](https://github.com/caleblareau/mgatk) without Snakemake or Java and adds
+HDF5 output, QC reports, and a query/baseline SNV evidence workflow.
 
 ## Installation
 
+mgatk2 requires Python 3.10 or newer.
+
 ```bash
-# Create conda environment with Python 3.12 (recommended)
-conda create -y -n mgatk2 python=3.12
-conda activate mgatk2
+python -m venv .venv
+source .venv/bin/activate
 pip install git+https://github.com/ollieeknight/mgatk2.git
+mgatk2 --help
 ```
 
-## Testing
+For development:
 
-To test if the package works well on your system, you can run
 ```bash
-git clone https://github.com/ollieeknight/mgatk2
+git clone https://github.com/ollieeknight/mgatk2.git
 cd mgatk2
-make install
-make run
-make tenx
+make setup
+make check-all
+make integration
 ```
 
-## Quick Start
+## Commands
 
-### Running with 10x Genomics data
+| Command | Purpose |
+|---|---|
+| `mgatk2 run` | Single-cell BAM with barcode tags; HDF5 defaults |
+| `mgatk2 tenx` | 10x `outs/` input; text defaults compatible with Signac |
+| `mgatk2 call` | Directory containing one bulk BAM per sample |
+| `mgatk2 paired` | Query/baseline mitochondrial SNV evidence from BAM or CRAM |
+| `mgatk2 wes` | Deprecated tumour/normal compatibility wrapper for `paired` |
+| `mgatk2 hardmask-fasta` | Hard-mask a reference FASTA with bundled NUMT BEDs |
 
-**For Signac/Seurat compatibility** (text output format):
-```bash
-cd path/to/cellranger-atac/output/  # directory containing 'outs'
-mgatk2 tenx
-```
-This uses the original mgatk defaults (no quality filtering, alignment-only deduplication) and produces text output compatible with Signac's `ReadMGATK()`, `IdentifyVariants()` and `AlleleFreq()` functions.
+Run `mgatk2 COMMAND --help` for the current options and defaults.
 
-**For enhanced QC and fast HDF5 output**:
-```bash
-cd path/to/cellranger-atac/output/  # directory containing 'outs'
-mgatk2 run
-```
-This enables stringent quality filtering, fragment-length aware deduplication, and generates HDF5 output for fast analysis with the included R functions (`R/mgatk2_functions.R`).
+## Single-cell analysis
 
-## Output Files
-
-### HDF5 format (default for `mgatk2 run`)
-
-```
-tree tests/run_output/
-├── mgatk2_report.html     # Quality control report
-├── output
-│   ├── counts.h5          # Nucleotide counts, Tn5 cut sites (16569 positions × cells)
-│   └── metadata.h5        # Coverage, depth, reference, barcode metadata
-├── output.log             # Complete log of run command
-└── qc
-    ├── cell_stats.csv     # Cell by cell statistics in a .csv format
-    └── summary.txt        # Quick output summary
-```
-
-### Text format (for `mgatk2 tenx` or `--format txt`)
-
-```
-tree tests/tenx_output
-├── output
-│   ├── A.txt.gz              # Nucleotide count matrix
-│   ├── C.txt.gz              # Nucleotide count matrix
-│   ├── chrM_refAllele.txt    # Reference alleles
-│   ├── coverage.txt.gz       # Coverage matrix
-│   ├── depthTable.tx         # Depth per cell
-│   ├── G.txt.gz              # Nucleotide count matrix
-│   └── T.txt.gz              # Nucleotide count matrix
-├── output.log                # Complete log of run command
-└── qc
-    ├── cell_stats.csv        # Cell by cell statistics in a .csv format
-    └── summary.txt           # Quick output summary
-
-```
-
-## Command Reference
+Use `tenx` for original-mgatk-style text output:
 
 ```bash
-mgatk2 run --help
-Usage: mgatk2 run [OPTIONS]
-
-  Run mgatk2 with optimised defaults
-
-Options:
-  -i, --input PATH                      Input BAM file or 10x outs/ directory
-                                        [default: current directory, auto-detects possorted_bam.bam]
-  -g, --genome TEXT                     Mitochondrial chromosome name (e.g chrM, MT, or M)  
-                                        [default: chrM]
-  -b, --barcodes PATH                   Barcode file (singlecell.csv, barcodes.tsv/csv, or auto-detect from BAM)
-  -bt, --barcode-tag TEXT               BAM tag for cell barcode  
-                                        [default: CB]
-  --min-barcode-reads INTEGER           Minimum reads per barcode when auto-detecting from BAM  
-                                        [default: 10]
-  -o, --output PATH                     Output directory for analysis results  
-                                        [default: mgatk2/]
-  -t, --threads INTEGER                 Number of threads for parallel processing 
-                                        [default: 16]
-  -v, --verbose                         Enable verbose logging 
-                                        [default: on]
-  --batch-size INTEGER                  Number of cells to process per batch
-                                        [default: 250]
-  -m, --memory FLOAT                    Maximum memory usage in GB 
-                                        [default: 128]
-  -q, --quality INTEGER                 Minimum base quality (Phred score) 
-                                        [default: 20]
-  --mapq INTEGER                        Minimum alignment/mapping quality  
-                                        [default: 30]
-  -c, --min-reads INTEGER               Minimum deduplicated reads per cell to include in analysis  
-                                        [default: 1]
-  -s, --max-strand-bias FLOAT           Maximum strand bias (0-1)  
-                                        [default: 1.0]
-  -e, --min-distance-from-end INTEGER   Minimum distance from read ends (bp) 
-                                        [default: 5]
-  -d, --deduplication                   Deduplication strategy 
-                                        [alignment_and_fragment_length|alignment_start|none]
-                                        [default: alignment_and_fragment_length]
-  -f, --format [txt|hdf5]               Output format: txt (text files) or hdf5 (fast binary)
-                                        [default: hdf5]
-  --pileup-mode [classic|fast]          Pileup engine: fast (vectorised numpy, default) or classic (reference)
-                                        [default: fast]
-  --no-tn5                              Skip Tn5 cut site tracking. Use for non-ATAC assays (RNA-seq, WGS)
-  --dry-run                             Show configuration and exit without processing (no output files created)
-  --help                                Show this message and exit.
+mgatk2 tenx --input path/to/cellranger-atac/outs --output results
 ```
 
-### `mgatk2 tenx` - 10x Genomics / Signac
+Use `run` for filtered HDF5 output and an HTML QC report:
 
 ```bash
-mgatk2 tenx --help
+mgatk2 run \
+  --input path/to/possorted_bam.bam \
+  --barcodes path/to/barcodes.tsv \
+  --output results
 ```
 
-Key additional options vs `run`:
+If `--barcodes` is omitted, barcodes are extracted from the BAM tag selected by
+`--barcode-tag` (default `CB`). The three deduplication modes are:
 
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--nh-max INTEGER` | 0 (off) | Filter multi-mappers by NH tag; set to `1` to match original mgatk |
-| `--nm-max INTEGER` | 0 (off) | Filter by edit distance (NM tag); set to `4` to match original mgatk |
-| `--pileup-mode` | fast | As above |
-| `--no-tn5` | — | As above |
+- `alignment_and_fragment_length`: alignment start, strand, and template length.
+- `alignment_start`: alignment start and strand; the `tenx` default.
+- `none`: retain all otherwise eligible alignments.
 
-### `mgatk2 call` - Bulk Analysis
+HDF5 output is written below `<output>/output/`:
+
+- `counts.h5`: strand-specific A/C/G/T counts, barcodes, and optional Tn5 cuts.
+- `metadata.h5`: coverage, per-cell summaries, inferred reference, and optional
+  barcode metadata.
+
+Text output contains compressed base and coverage tables, a depth table, and an
+inferred reference allele table. Both formats also write `output.log` and
+`qc/{cell_stats.csv,summary.txt}`.
+
+The R helpers in [R/mgatk2_functions.R](R/mgatk2_functions.R) load and analyse
+HDF5 output. See [R/README.md](R/README.md).
+
+## Paired query/baseline analysis
+
+`paired` compares an experimental query with an autologous baseline without
+assuming tumour/germline biology:
 
 ```bash
-mgatk2 call --help
-Usage: mgatk2 call [OPTIONS]
-
-  Bulk analysis of BAM files (Smart-seq style, one BAM per cell)
-
-Options:
-  -i, --input PATH                      Input BAM file for bulk analysis (one BAM per cell)  [required]
-  -g, --genome TEXT                     Mitochondrial chromosome name (e.g chrM, MT, or M)  
-                                        [default: chrM]
-  -o, --output PATH                     Output directory for analysis results  
-                                        [default: mgatk2/]
-  -t, --threads INTEGER                 Number of threads for parallel processing 
-                                        [default: 16]
-  -v, --verbose                         Enable verbose logging 
-                                        [default: on]
-  -m, --memory FLOAT                    Maximum memory usage in GB 
-                                        [default: 128]
-  -q, --quality INTEGER                 Minimum base quality (Phred score) 
-                                        [default: 20]
-  --mapq INTEGER                        Minimum alignment/mapping quality  
-                                        [default: 30]
-  -s, --max-strand-bias FLOAT           Maximum strand bias (0-1)  
-                                        [default: 1.0]
-  -e, --min-distance-from-end INTEGER   Minimum distance from read ends (bp) 
-                                        [default: 5]
-  -d, --deduplication                   Deduplication strategy 
-                                        [alignment_and_fragment_length|alignment_start|none]
-                                        [default: alignment_and_fragment_length]
-  -f, --format [txt|hdf5]               Output format: txt (text files) or hdf5 (fast binary)
-                                        [default: hdf5]
-  --dry-run                             Show configuration and exit without processing
-  --help                                Show this message and exit.
+mgatk2 paired \
+  --query NKG2C.bam \
+  --baseline CD14.bam \
+  --reference GRCh38.fa \
+  --output results \
+  --sample-name K010_NKG2C_v_CD14
 ```
 
-### `mgatk2 hardmask-fasta` - FASTA Masking
+For upstream UMI-consensus inputs, declare that provenance and do not deduplicate
+again:
 
 ```bash
-mgatk2 hardmask-fasta --help
-Usage: mgatk2 hardmask-fasta [OPTIONS]
-
-  Hard-mask reference genome FASTA with blacklists
-
-Options:
-  -i, --input-fasta PATH                Input reference genome FASTA file  [required]
-  -o, --output-fasta PATH               Output hard-masked FASTA file  [required]
-  -g, --genome TEXT                     Genome build (hg38, hg19, GRCh38, GRCh37, mm10, mm9, GRCm38, GRCm37)  [required]
-  --mt-chrom TEXT                       Mitochondrial chromosome name (auto-detected from genome if not provided)
-  --mask-numts / --no-mask-numts        Mask NUMT regions in nuclear chromosomes (recommended)  
-                                        [default: mask-numts]
-  -v, --verbose                         Enable verbose logging  
-                                        [default: off]
-  --help                                Show this message and exit.
+mgatk2 paired \
+  --query query.consensus.bam \
+  --baseline baseline.consensus.bam \
+  --reference GRCh38.fa \
+  --output results \
+  --sample-name pair \
+  --deduplication none \
+  --input-is-consensus
 ```
 
-## Deduplication Methods
+The FASTA defines `REF`. Overlapping mates contribute at most one fragment
+observation per position; higher base quality resolves a disagreement and an
+equal-quality disagreement is masked. Missing-quality, duplicate, QC-failed,
+unmapped, secondary, and supplementary reads are excluded and counted in QC.
 
-**mgatk2** provides three deduplication strategies:
+Schema 1.0 writes:
 
-1. **`alignment_and_fragment_length`** (default for `mgatk2 run`): Marks reads as duplicates if they share the same alignment position, strand, AND fragment length. Most stringent method and the best for paired-end data.
+| File | Contents |
+|---|---|
+| `{sample}.mt_evidence.tsv.gz` | A/C/G/T evidence at every mitochondrial position |
+| `{sample}.mt_candidates.tsv.gz` | Every observed non-reference SNV and its filters |
+| `{sample}.mt_variants.vcf.gz` and `.tbi` | Indexed query/baseline SNV VCF |
+| `{sample}.mt_callable.bed.gz` | Positions reportable in both samples |
+| `{sample}.mt_qc.json` | Parameters, provenance, schemas, and read/fragment QC |
+| `{sample}.paired.log` | Concise execution summary |
 
-2. **`alignment_start`** (default for `mgatk2 tenx`): Marks reads as duplicates if they share the same alignment position and strand only. This mode is similar to `Picard MarkDuplicates` and matches original mgatk behavior.
+The initial numeric thresholds are migration annotations, not validated
+biological defaults. `LEGACY_FILTER` records their result; `FILTER` records
+technical and statistical flags.
 
-3. **`none`**: No deduplication.
+Current paired limitations:
 
-## License
+- SNVs only; indels are not emitted.
+- Shifted-reference evidence is not yet accepted.
+- A linear mitochondrial reference leaves its artificial breakpoint unresolved.
+  Configured edge positions remain in evidence but are flagged and excluded from
+  callable territory.
+- Bundled NUMT BEDs are nuclear-side reference-masking resources, not
+  mitochondrial blacklists. Use `--custom-blacklist` for a chrM-side BED.
 
-MIT License - see [LICENSE](LICENSE) for details.
+`mgatk2 wes` remains as a deprecated adapter for one compatibility release. It
+maps tumour/normal arguments to the same paired pipeline and additionally writes
+`{sample}.mito_somatic.tsv`.
 
-mgatk2 is derived from the original [mgatk](https://github.com/caleblareau/mgatk) by Caleb Lareau (2020).
+## Releasing
 
-## Citation
+Before tagging:
 
-If you use mgatk2 in your research, please cite the original mgatk paper that established the methodology:
+```bash
+make check-all
+make integration
+git status --short
+```
 
-> Lareau CA, Ludwig LS, Muus C, et al. Massively parallel single-cell mitochondrial DNA genotyping and chromatin profiling. *Nature Biotechnology* 39, 451–461 (2021). https://doi.org/10.1038/s41587-020-0645-6
+`make check-all` runs Ruff, pytest, CLI smoke tests, and builds both the wheel and
+source distribution. CI repeats Python tests on 3.10–3.12. Tagged releases build
+and publish the Docker image.
+
+## Licence and citation
+
+mgatk2 is MIT licensed and derives from the original mgatk by Caleb Lareau. If
+you use it in research, cite:
+
+> Lareau CA, Ludwig LS, Muus C, et al. Massively parallel single-cell
+> mitochondrial DNA genotyping and chromatin profiling. *Nature Biotechnology*
+> 39, 451–461 (2021). https://doi.org/10.1038/s41587-020-0645-6
