@@ -38,11 +38,10 @@ def run(
     compute_tn5,
 ):
     """Run mgatk2 with optimised defaults"""
-    # Determine if processing should be sequential (auto-enabled when threads=1)
     sequential = ncores == 1
 
     try:
-        run_pipeline_command(
+        status = run_pipeline_command(
             bam_path=bam_path,
             output_dir=output_dir,
             barcode_file=barcode_file,
@@ -69,6 +68,8 @@ def run(
             report_subtitle="mgatk2 output analysis",
             working_directory=os.getcwd(),
         )
+        if status:
+            raise SystemExit(status)
 
     except KeyboardInterrupt:
         raise SystemExit(130) from None
