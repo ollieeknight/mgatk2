@@ -1,4 +1,4 @@
-"""Core pipeline components."""
+"""Core configuration and exceptions."""
 
 from .config import (
     DeduplicationConfig,
@@ -16,19 +16,13 @@ from .exceptions import (
     NoChrMReadsError,
     ProcessingError,
 )
-from .pipeline import MtDNAPipeline, run_pipeline
 
 __all__ = [
-    # From config
     "PipelineConfig",
     "QualityThresholds",
     "DeduplicationConfig",
     "PerformanceConfig",
     "SimpleRead",
-    # From pipeline
-    "run_pipeline",
-    "MtDNAPipeline",
-    # From exceptions
     "MgatkError",
     "InvalidInputError",
     "ProcessingError",
