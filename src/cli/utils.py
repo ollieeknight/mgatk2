@@ -9,7 +9,6 @@ from importlib.metadata import version
 from pathlib import Path
 
 from core.exceptions import InvalidInputError, ProcessingError
-from core.pipeline import run_pipeline
 from utils.utils import validate_bam_file, validate_barcode_file
 
 logger = logging.getLogger(__name__)
@@ -21,27 +20,16 @@ def auto_detect_10x_structure(
     """Auto-detect 10x Genomics output structure"""
     path = Path(bam_path)
 
-    # Directory input - find BAM file
     if path.is_dir():
-        # Check for outs directory
-        bam_file: Path | None = None
-        if path.name == "outs" or "outs" in str(path):
-            bam_file = path / "possorted_bam.bam"
-            if not bam_file.exists():
-                bam_file = path.parent / "outs" / "possorted_bam.bam"
-        else:
-            # Look for outs subdirectory
-            outs_dir = path / "outs"
-            bam_file = outs_dir / "possorted_bam.bam" if outs_dir.exists() else None
-
-        if bam_file and bam_file.exists():
+        candidates = [path / "possorted_bam.bam", path / "outs" / "possorted_bam.bam"]
+        bam_file = next((candidate for candidate in candidates if candidate.exists()), None)
+        if bam_file:
             bam_path = str(bam_file)
             if not barcode_file:
                 barcode_file = _find_barcode_file(bam_file.parent)
         else:
             logger.warning(f"No possorted_bam.bam found in {path}")
 
-    # File input - check if in 10x structure
     elif path.is_file() and not barcode_file:
         if path.parent.name == "outs":
             logger.info("Detected 10x BAM in outs directory")
@@ -52,12 +40,10 @@ def auto_detect_10x_structure(
 
 def _find_barcode_file(directory: Path) -> str | None:
     """Find barcode file in 10x directory."""
-    # Try singlecell.csv first
     singlecell = directory / "singlecell.csv"
     if singlecell.exists():
         return str(singlecell)
 
-    # Try barcode files
     for pattern in [
         "filtered_peak_bc_matrix/barcodes.tsv",
         "filtered_tf_bc_matrix/barcodes.tsv.gz",
@@ -84,39 +70,25 @@ def get_10x_parent_directory_name(bam_path: str) -> str:
     """Extract the parent directory name when processing 10x data"""
     bam_path_obj = Path(bam_path)
 
-    # If BAM is in an 'outs' directory, get the parent of 'outs'
     if bam_path_obj.parent.name == "outs":
-        # Get the parent of 'outs' directory
-        project_dir = bam_path_obj.parent.parent
-        return project_dir.name
-
-    # If we auto-detected from a directory containing 'outs', use that directory name
-    if "outs" in str(bam_path_obj.parent):
-        # Find the directory that contains 'outs'
-        current = bam_path_obj.parent
-        while current.parent != current:  # Not root
-            if current.name == "outs":
-                return current.parent.name
-            current = current.parent
-
-    # Fallback: use the directory name containing the BAM
+        return bam_path_obj.parent.parent.name
     return bam_path_obj.parent.name if bam_path_obj.parent.name != "." else "mgatk2"
 
 
 def setup_file_logging(log_file_path):
-    """Setup file logging"""
-    logger = logging.getLogger("mgatk")
+    """Write application logs to one deterministic file."""
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if getattr(handler, "_mgatk2_file_handler", False):
+            root_logger.removeHandler(handler)
+            handler.close()
 
-    # Create file handler
     file_handler = logging.FileHandler(log_file_path, mode="w")
     file_handler.setLevel(logging.INFO)
-
-    # Create formatter
+    file_handler._mgatk2_file_handler = True
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(formatter)
-
-    # Add handler to logger
-    logger.addHandler(file_handler)
+    root_logger.addHandler(file_handler)
 
 
 def run_pipeline_command(
@@ -151,20 +123,17 @@ def run_pipeline_command(
     """Common pipeline execution logic"""
 
     if verbose:
-        # Only enable DEBUG for mgatk2 loggers, not third-party libraries
         for logger_name in ["mgatk", __name__]:
             logging.getLogger(logger_name).setLevel(logging.DEBUG)
 
     __version__ = version("mgatk2")
     logger.info("mgatk2 version %s", __version__)
 
-    # Auto-detect 10x Genomics structure only if barcode_file is not explicitly None
     if barcode_file != "bulk":
         bam_path, barcode_file = auto_detect_10x_structure(bam_path, barcode_file)
 
     name = "output_"
 
-    # Convert dedup_mode
     skip_dedup = dedup_mode.lower() == "none"
     use_fragment_length_dedup = dedup_mode.lower() in [
         "alignment_and_fragment_length",
@@ -172,13 +141,11 @@ def run_pipeline_command(
         "hybrid",
     ]
 
-    # Setup file logging if not in dry run mode
     if not dry_run:
         log_file = Path(output_dir) / "output.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         setup_file_logging(log_file)
 
-        # Log the command that was run
         cmd_args = sys.argv
         cmd_path = os.path.realpath(cmd_args[0]) if cmd_args else "mgatk2"
         full_command = f"{cmd_path} {' '.join(cmd_args[1:])}"
@@ -188,19 +155,15 @@ def run_pipeline_command(
 
     try:
         validate_bam_file(bam_path)
-        if barcode_file:
+        if barcode_file and barcode_file != "bulk":
             validate_barcode_file(barcode_file)
 
         os.makedirs(output_dir, exist_ok=True)
 
         mito_chr = normalise_mito_chr(mito_genome)
 
-        # Barcode file will be auto-extracted in run_pipeline if None
         if barcode_file is None:
             logger.info("No barcode file provided - will extract barcodes from BAM")
-        barcode_file_to_cleanup = None
-
-        # Log configuration
         _log_configuration(
             bam_path,
             barcode_file,
@@ -228,9 +191,7 @@ def run_pipeline_command(
         if dry_run:
             return 0
 
-        # Determine title for HTML report (use passed values or generate from original BAM path)
         if report_title is None:
-            # Use original BAM path if provided, otherwise current bam_path
             source_path = original_bam_path if original_bam_path else bam_path
             report_title = get_10x_parent_directory_name(source_path)
         if report_subtitle is None:
@@ -241,7 +202,6 @@ def run_pipeline_command(
         worker_batch = batch_size if batch_size is not None else actual_cores
         logger.info(f"  Worker batch size:      {worker_batch} cells")
 
-        # Run pipeline
         run_args = {
             "bam_path": bam_path,
             "barcode_file": barcode_file,
@@ -274,15 +234,9 @@ def run_pipeline_command(
         if max_memory is not None:
             run_args["max_memory_gb"] = max_memory
 
-        run_pipeline(**run_args)
+        from core.pipeline import run_pipeline
 
-        # Clean up auto-detected barcode file if it was created
-        if barcode_file_to_cleanup:
-            try:
-                os.remove(barcode_file_to_cleanup)
-                logger.info(f"Cleaned up auto-detected barcode file: {barcode_file_to_cleanup}")
-            except Exception as e:
-                logger.warning("Could not remove auto-detected barcode file: %s", e)
+        run_pipeline(**run_args)
 
         return 0
 
@@ -306,7 +260,6 @@ def _determine_cores(ncores):
     import multiprocessing
 
     if ncores is None:
-        # Check for SLURM environment variables
         slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
         slurm_ntasks = os.environ.get("SLURM_NTASKS")
 
@@ -326,23 +279,6 @@ def _determine_cores(ncores):
         actual_cores = ncores
 
     return actual_cores
-
-
-def _determine_io_batch_size(n_barcodes: int, user_batch_size: int | None = None) -> int:
-    """Determine optimal HDF5 flush batch size based on dataset size"""
-    if user_batch_size is not None:
-        return user_batch_size
-
-    # Dynamic sizing based on dataset size
-    if n_barcodes < 500:
-        return 100  # Small dataset: flush frequently
-    if n_barcodes < 2000:
-        return 250  # Medium dataset
-    if n_barcodes < 5000:
-        return 500  # Medium-large dataset
-    if n_barcodes < 20000:
-        return 1000  # Large dataset
-    return 2000  # Very large dataset: minimize flush overhead
 
 
 def _log_configuration(
@@ -373,14 +309,19 @@ def _log_configuration(
     logger.info("  Input BAM:              %s", os.path.realpath(bam_path))
     logger.info(
         "  Input barcodes:         %s",
-        os.path.realpath(barcode_file) if barcode_file else "None (auto-detect from BAM)",
+        (
+            "bulk (all reads)"
+            if barcode_file == "bulk"
+            else os.path.realpath(barcode_file)
+            if barcode_file
+            else "None (auto-detect from BAM)"
+        ),
     )
     logger.info("  Output directory:       %s", os.path.realpath(output_dir))
     logger.info("  BAM prefix:             %s", mito_chr)
 
     actual_cores = _determine_cores(ncores)
     if ncores is None:
-        # Check for SLURM environment variables
         slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
         slurm_ntasks = os.environ.get("SLURM_NTASKS")
 
@@ -428,7 +369,9 @@ def _log_configuration(
     logger.info("  Sequential processing:  %s", sequential)
     logger.info("  Using mitochondrial chromosome: %s", mito_chr)
 
-    # Count only cell barcodes (is_cell_barcode = 1) if it's a CSV file
+    if barcode_file == "bulk":
+        logger.info("  Barcodes:               bulk (all reads)")
+        return
     if barcode_file and barcode_file.endswith(".csv"):
         n_barcodes = 0
         total_rows = 0
@@ -442,7 +385,6 @@ def _log_configuration(
                 logger.warning("CSV file has no headers")
                 return
 
-            # Determine which column to use
             if "is__cell_barcode" in headers:
                 column_found = "is__cell_barcode"
             elif "is_cell_barcode" in headers:
@@ -457,11 +399,9 @@ def _log_configuration(
                     if is_cell in ["1", "1.0", "True", "true", "TRUE"]:
                         n_barcodes += 1
     elif barcode_file:
-        # For plain text barcode files, count all non-empty lines
         with open(barcode_file) as f:
             n_barcodes = sum(1 for line in f if line.strip())
     else:
-        # For bulk calling
         logger.info("  Barcodes:               bulk (all reads)")
         return
     logger.info("  Barcodes:               %s", n_barcodes)
