@@ -35,7 +35,7 @@ def tenx(
     """Run mgatk2 with original mgatk package behaviour"""
     sequential = ncores == 1
 
-    run_pipeline_command(
+    status = run_pipeline_command(
         bam_path=bam_path,
         output_dir=output_dir,
         barcode_file=barcode_file,
@@ -60,3 +60,5 @@ def tenx(
         pileup_mode=pileup_mode,
         compute_tn5=compute_tn5,
     )
+    if status:
+        raise SystemExit(status)
