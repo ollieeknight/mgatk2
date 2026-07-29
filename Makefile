@@ -1,32 +1,58 @@
-.PHONY: setup format lint check test clean check-all benchmark benchmark-hdf5
+.PHONY: setup format lint test check build check-all fixture run tenx call integration benchmark benchmark-hdf5 clean
 
 setup:
 	python3 -m venv .venv
 	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e . ruff
+	.venv/bin/pip install -e '.[dev]'
 
 format:
-	.venv/bin/ruff format src/
-	.venv/bin/ruff check --fix src/
+	.venv/bin/ruff format src/ tests/
+	.venv/bin/ruff check --fix src/ tests/
 
 lint:
-	.venv/bin/ruff check src/
+	.venv/bin/ruff check src/ tests/
+	.venv/bin/ruff format --check src/ tests/
 
-run:
+test:
+	.venv/bin/pytest -q
+
+check:
+	$(MAKE) lint
+	$(MAKE) test
+
+build:
+	.venv/bin/python -m build --no-isolation
+
+check-all: check build
+	.venv/bin/mgatk2 --help
 	.venv/bin/mgatk2 run --help
-	cd tests && ../.venv/bin/mgatk2 run -o run_hdf5_output -f hdf5
-	cd tests && ../.venv/bin/mgatk2 run -o run_txt_output -f txt
-
-tenx:
 	.venv/bin/mgatk2 tenx --help
-	cd tests && ../.venv/bin/mgatk2 tenx -o tenx_output
-	cd tests && ../.venv/bin/mgatk2 run -o run_output
+	.venv/bin/mgatk2 call --help
+	.venv/bin/mgatk2 paired --help
+	.venv/bin/mgatk2 wes --help
 
-benchmark:
-	cd tests && python benchmark.py
+fixture:
+	.venv/bin/python tests/create_integration_fixture.py .test-work
 
-benchmark-hdf5:
-	cd tests && python benchmark.py --format hdf5
+run: fixture
+	.venv/bin/mgatk2 run --help
+	.venv/bin/mgatk2 run -i .test-work/outs -o .test-work/run-hdf5 -f hdf5 -t 1
+	.venv/bin/mgatk2 run -i .test-work/outs -o .test-work/run-txt -f txt -t 1
+
+tenx: fixture
+	.venv/bin/mgatk2 tenx --help
+	.venv/bin/mgatk2 tenx -i .test-work/outs -o .test-work/tenx -t 1
+
+call: fixture
+	.venv/bin/mgatk2 call -i .test-work/outs -o .test-work/call -t 1
+
+integration: run tenx call
+
+benchmark: fixture
+	cd tests && ../.venv/bin/python benchmark.py
+
+benchmark-hdf5: fixture
+	cd tests && ../.venv/bin/python benchmark.py --format hdf5
 
 clean:
 	rm -rf build dist *.egg-info
