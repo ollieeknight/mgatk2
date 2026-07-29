@@ -19,11 +19,15 @@ wheels/
 pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
+.local/
 .installed.cfg
 *.egg
 MANIFEST
 .ruff_cache/
+.pytest_cache/
+.mypy_cache/
 .flake8
+.test-work/
 
 # Virtual environments
 .venv
@@ -43,7 +47,3 @@ Icon
 .vscode/
 .project
 .settings/
-
-# Conda build artifacts
-conda-build-output/
-*.conda
