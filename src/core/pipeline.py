@@ -58,7 +58,6 @@ class MtDNAPipeline:
 
         with pysam.AlignmentFile(str(self.bam_path), "rb") as bam:
             if self.config.mito_chr not in bam.references:
-                # Try common mitochondrial chromosome names
                 for alt_name in ["chrM", "MT", "M", "chrMT"]:
                     if alt_name in bam.references:
                         logger.warning(f"Using '{alt_name}' instead of '{self.config.mito_chr}'")
@@ -196,7 +195,6 @@ def run_pipeline(
     nm_max: int = 0,
     pileup_mode: str = "classic",
     compute_tn5: bool = True,
-    write_cell_bams: bool = False,
     barcode_tag: str = "CB",
     min_barcode_reads: int = 1,
     mito_chr: str = "chrM",
@@ -213,7 +211,9 @@ def run_pipeline(
     """Run the pipeline with individual parameters"""
     barcode_metadata = None
 
-    if barcode_file is None:
+    if barcode_file == "bulk":
+        barcodes = ["bulk"]
+    elif barcode_file is None:
         from file_io.barcode_extraction import extract_barcodes_from_bam
 
         logger.info("No barcode file provided - extracting barcodes from BAM")
@@ -244,6 +244,7 @@ def run_pipeline(
         min_baseq=min_baseq,
         min_mapq=min_mapq,
         max_strand_bias=max_strand_bias,
+        min_distance_from_end=min_distance_from_end,
         skip_deduplication=skip_deduplication,
         use_fragment_length_dedup=use_fragment_length_dedup,
         nh_max=nh_max,
@@ -258,7 +259,6 @@ def run_pipeline(
         min_reads_per_cell=min_reads_per_cell,
         barcode_tag=barcode_tag,
         mito_chr=mito_chr,
-        write_cell_bams=write_cell_bams,
     )
 
     pipeline = MtDNAPipeline(
