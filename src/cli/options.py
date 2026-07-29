@@ -3,9 +3,56 @@
 import click
 
 
+def _paired_quality_options(f):
+    """Shared paired/WES evidence and migration-threshold options."""
+    options = [
+        click.option("--max-strand-bias", "-s", default=0.9, type=float, show_default=True),
+        click.option("--min-distance-from-end", "-e", default=5, type=int, show_default=True),
+        click.option("--mapq", "min_mapq", default=20, type=int, show_default=True),
+        click.option("--quality", "-q", "base_qual", default=20, type=int, show_default=True),
+    ]
+    for option in options:
+        f = option(f)
+    return f
+
+
+def paired_options(f):
+    """Options for generic paired mitochondrial evidence analysis."""
+    f = click.option("--dry-run", is_flag=True, help="Validate and show configuration only")(f)
+    f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
+    f = click.option(
+        "--input-is-consensus",
+        is_flag=True,
+        help="Declare upstream UMI-consensus inputs (requires --deduplication none)",
+    )(f)
+    f = click.option("--circular-edge-bases", default=500, type=int, show_default=True)(f)
+    f = click.option("--custom-blacklist", type=click.Path(exists=True, dir_okay=False))(f)
+    f = click.option("--min-query-baseline-ratio", default=3.0, type=float, show_default=True)(f)
+    f = click.option("--max-baseline-af", default=0.01, type=float, show_default=True)(f)
+    f = click.option("--min-query-af", default=0.005, type=float, show_default=True)(f)
+    f = click.option("--min-alt-observations", default=3, type=int, show_default=True)(f)
+    f = click.option("--min-baseline-depth", default=5, type=int, show_default=True)(f)
+    f = click.option("--min-query-depth", default=10, type=int, show_default=True)(f)
+    f = click.option(
+        "--deduplication",
+        type=click.Choice(
+            ["alignment_and_fragment_length", "alignment_start", "none"],
+            case_sensitive=False,
+        ),
+        default="alignment_and_fragment_length",
+        show_default=True,
+    )(f)
+    f = _paired_quality_options(f)
+    f = click.option("--genome", "mito_genome", default="chrM", show_default=True)(f)
+    f = click.option("--sample-name", required=True)(f)
+    f = click.option("--output", "output_dir", required=True, type=click.Path())(f)
+    f = click.option("--reference", required=True, type=click.Path(exists=True, dir_okay=False))(f)
+    f = click.option("--baseline", required=True, type=click.Path(exists=True, dir_okay=False))(f)
+    return click.option("--query", required=True, type=click.Path(exists=True, dir_okay=False))(f)
+
+
 def common_options(f):
     """Common options for run, tenx, and call commands."""
-    # Apply options in reverse order (last decorator applied first)
     f = click.option(
         "--dry-run",
         is_flag=True,
@@ -113,8 +160,6 @@ def common_options(f):
         "--verbose",
         "-v",
         is_flag=True,
-        default=True,
-        show_default="on",
         help="Enable verbose logging",
     )(f)
     f = click.option(
@@ -179,7 +224,6 @@ def common_options(f):
 
 def tenx_options(f):
     """Options for tenx command with 10x-specific defaults."""
-    # Apply options in reverse order
     f = click.option(
         "--dry-run",
         is_flag=True,
@@ -437,47 +481,11 @@ def wes_options(f):
         show_default=True,
         help="Minimum read depth in tumour at a called site",
     )(f)
-    f = click.option(
-        "--max-strand-bias",
-        "-s",
-        "max_strand_bias",
-        default=0.9,
-        type=float,
-        show_default=True,
-        help="Maximum strand bias for tumour alt allele (|fwd-rev|/(fwd+rev))",
-    )(f)
-    f = click.option(
-        "--min-distance-from-end",
-        "-e",
-        "min_distance_from_end",
-        default=5,
-        type=int,
-        show_default=True,
-        help="Minimum distance from read ends to count a base (bp)",
-    )(f)
-    f = click.option(
-        "--mapq",
-        "min_mapq",
-        default=20,
-        type=int,
-        show_default=True,
-        help="Minimum mapping quality (20 recommended for chrM — NuMT reads get reduced MAPQ)",
-    )(f)
-    f = click.option(
-        "--quality",
-        "-q",
-        "base_qual",
-        default=20,
-        type=int,
-        show_default=True,
-        help="Minimum base quality (Phred score)",
-    )(f)
+    f = _paired_quality_options(f)
     f = click.option(
         "--verbose",
         "-v",
         is_flag=True,
-        default=True,
-        show_default="on",
         help="Enable verbose logging",
     )(f)
     f = click.option(
@@ -523,7 +531,6 @@ def wes_options(f):
 
 def call_options(f):
     """Options for call command (bulk analysis, one BAM per cell)."""
-    # Apply options in reverse order
     f = click.option(
         "--dry-run",
         is_flag=True,
@@ -598,8 +605,6 @@ def call_options(f):
         "--verbose",
         "-v",
         is_flag=True,
-        default=True,
-        show_default="on",
         help="Enable verbose logging",
     )(f)
     f = click.option(
@@ -633,5 +638,5 @@ def call_options(f):
         "bam_path",
         type=click.Path(exists=True),
         required=True,
-        help="Input BAM file for bulk analysis (one BAM per cell)",
+        help="Directory containing one bulk BAM per sample",
     )(f)
