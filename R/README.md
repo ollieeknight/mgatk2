@@ -2,13 +2,12 @@
 
 ## Files
 
-- **mgatk_functions.R** - Data loading and variant calling functions
-- **mgatk_qc_plots.R** - Line-by-line QC plotting script
+- **mgatk2_functions.R** - Data loading, QC, and variant calling functions
 
 ## Usage
 
 ```r
-source("R/mgatk_functions.R")
+source("R/mgatk2_functions.R")
 library(hdf5r)
 library(tidyverse)
 
