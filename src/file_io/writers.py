@@ -2,7 +2,6 @@
 
 import errno
 import gzip
-import json
 import logging
 import os
 import shutil
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 class IncrementalHDF5Writer:
     """Writes mgatk results incrementally to HDF5 with batched writes."""
 
-    # Retry configuration for network filesystem operations
+    # HDF5 can briefly return EAGAIN on networked filesystems.
     MAX_RETRIES = 5
     INITIAL_RETRY_DELAY = 0.1
     MAX_RETRY_DELAY = 5.0
@@ -71,9 +70,6 @@ class IncrementalHDF5Writer:
         bases = ["A", "C", "G", "T"]
         strands = ["fwd", "rev"]
 
-        file_props = h5py.h5p.create(h5py.h5p.FILE_CREATE)
-        file_props.set_userblock(0)
-
         self.counts_file = h5py.File(
             self.output_dir / "counts.h5",
             "w",
@@ -97,7 +93,6 @@ class IncrementalHDF5Writer:
                     fillvalue=0,
                 )
 
-        # Add Tn5 transposition site datasets (Tn5 cut sites)
         for strand in strands:
             self.counts_file.create_dataset(
                 f"tn5_cuts_{strand}",
@@ -109,7 +104,6 @@ class IncrementalHDF5Writer:
                 fillvalue=0,
             )
 
-        # Create and keep metadata.h5 open with optimised settings
         self.metadata_file = h5py.File(
             self.output_dir / "metadata.h5",
             "w",
@@ -149,14 +143,11 @@ class IncrementalHDF5Writer:
         if barcode not in self.barcode_to_idx:
             return  # Skip unknown barcodes
 
-        # Add to buffer
         self.batch_buffer.append(result)
 
-        # Store QC if present
         if "qc" in result:
             self.cell_stats.append(result["qc"])
 
-        # Write batch when buffer is full
         if len(self.batch_buffer) >= self.BATCH_SIZE:
             self._write_batch()
 
@@ -167,11 +158,9 @@ class IncrementalHDF5Writer:
 
         bases = ["A", "C", "G", "T"]
 
-        # Pre-allocate arrays for this batch
         batch_size = len(self.batch_buffer)
         batch_indices = []
 
-        # Prepare data structures for batch write
         batch_data = {
             f"{base}_{strand}": np.zeros((self.n_positions, batch_size), dtype=np.uint16)
             for base in bases
@@ -186,14 +175,12 @@ class IncrementalHDF5Writer:
         batch_genome_coverage = np.zeros(batch_size, dtype=np.float32)
         batch_total_bases = np.zeros(batch_size, dtype=np.float32)
 
-        # Process each cell in the batch
         for batch_idx, result in enumerate(self.batch_buffer):
             barcode = result["barcode"]
             pileup = result["pileup"]
             bc_idx = self.barcode_to_idx[barcode]
             batch_indices.append(bc_idx)
 
-            # Calculate statistics
             depths = [counts["depth"] for counts in pileup.values()]
             mean_depth = np.mean(depths) if depths else 0
             median_depth = np.median(depths) if depths else 0
@@ -205,19 +192,15 @@ class IncrementalHDF5Writer:
             )
             self.cell_depths[barcode] = mean_depth
 
-            # Fill batch arrays
             for pos, counts in pileup.items():
-                pos_idx = pos  # Already 0-based
+                pos_idx = pos
                 pos_1based = pos + 1
 
-                # Coverage
                 batch_coverage[pos_idx, batch_idx] = min(counts["depth"], 65535)
 
-                # Tn5 cut sites
                 batch_tn5_cuts_fwd[pos_idx, batch_idx] = min(counts.get("tn5_cuts_fwd", 0), 65535)
                 batch_tn5_cuts_rev[pos_idx, batch_idx] = min(counts.get("tn5_cuts_rev", 0), 65535)
 
-                # Base counts
                 for base in bases:
                     fwd = counts.get(f"{base}_fwd", 0)
                     rev = counts.get(f"{base}_rev", 0)
@@ -226,18 +209,15 @@ class IncrementalHDF5Writer:
                     batch_data[f"{base}_fwd"][pos_idx, batch_idx] = min(fwd, 65535)
                     batch_data[f"{base}_rev"][pos_idx, batch_idx] = min(rev, 65535)
 
-                    # Track for reference
                     if total > 0:
                         self.position_base_counts[pos_1based][base] += total
 
-            # Store metadata
             batch_mean_depth[batch_idx] = mean_depth
             batch_median_depth[batch_idx] = median_depth
             batch_max_depth[batch_idx] = min(max_depth, 65535)
             batch_genome_coverage[batch_idx] = genome_coverage
             batch_total_bases[batch_idx] = total_bases
 
-        # Write entire batch to HDF5 (single I/O operation per dataset)
         try:
             for key, data in batch_data.items():
                 self._write_batch_with_retry(self.counts_file[key], batch_indices, data)
@@ -252,7 +232,6 @@ class IncrementalHDF5Writer:
                 self.metadata_file["coverage"], batch_indices, batch_coverage
             )
 
-            # Write metadata arrays
             for batch_idx, bc_idx in enumerate(batch_indices):
                 self.metadata_file["mean_depth"][bc_idx] = batch_mean_depth[batch_idx]
                 self.metadata_file["median_depth"][bc_idx] = batch_median_depth[batch_idx]
@@ -260,7 +239,6 @@ class IncrementalHDF5Writer:
                 self.metadata_file["genome_coverage"][bc_idx] = batch_genome_coverage[batch_idx]
                 self.metadata_file["total_bases"][bc_idx] = batch_total_bases[batch_idx]
 
-            # Flush after each batch
             self._flush_with_retry()
 
             self.cells_written += len(self.batch_buffer)
@@ -269,7 +247,6 @@ class IncrementalHDF5Writer:
             logger.error("Failed to write batch after retries: %s", e)
             raise
 
-        # Clear the buffer
         self.batch_buffer.clear()
 
     def _write_batch_with_retry(self, dataset, bc_indices: list[int], data: np.ndarray):
@@ -278,7 +255,6 @@ class IncrementalHDF5Writer:
 
         for attempt in range(self.MAX_RETRIES):
             try:
-                # Write all columns at once
                 for batch_idx, bc_idx in enumerate(bc_indices):
                     dataset[:, bc_idx] = data[:, batch_idx]
 
@@ -297,12 +273,11 @@ class IncrementalHDF5Writer:
                             e,
                         )
                         time.sleep(delay)
-                        delay = min(delay * 2, self.MAX_RETRY_DELAY)  # Exponential backoff
+                        delay = min(delay * 2, self.MAX_RETRY_DELAY)
                     else:
                         logger.error(f"Batch write failed after {self.MAX_RETRIES} attempts")
                         raise
                 else:
-                    # Different error, don't retry
                     raise
 
     def _flush_with_retry(self):
@@ -333,7 +308,7 @@ class IncrementalHDF5Writer:
 
     def finalize(self, qc_dir: Path):
         """
-        Finalize HDF5 files.
+        Finalise HDF5 files.
 
         Flush any remaining batch, write reference alleles, close files, and write QC.
 
@@ -342,11 +317,9 @@ class IncrementalHDF5Writer:
         """
         from .formats import write_cell_stats
 
-        # Write any remaining buffered cells
         if self.batch_buffer:
             self._write_batch()
 
-        # Determine reference alleles more efficiently
         logger.info("Computing reference alleles...")
         bases = ["A", "C", "G", "T"]
         ref_alleles = ["N"] * self.n_positions
@@ -357,37 +330,27 @@ class IncrementalHDF5Writer:
                 if counts[max_base] > 0:
                     ref_alleles[pos - 1] = max_base
 
-        # Write reference to metadata.h5
         ref_array = np.array(ref_alleles, dtype="S1")
         self.metadata_file.create_dataset(
             "reference", data=ref_array, compression="gzip", compression_opts=4
         )
 
-        # Write barcode metadata if available (from singlecell.csv)
         if self.barcode_metadata is not None:
-            # Create a group for barcode metadata
             if "barcode_metadata" in self.metadata_file:
                 del self.metadata_file["barcode_metadata"]
             metadata_group = self.metadata_file.create_group("barcode_metadata")
 
-            # metadata is a dict with column names as keys and lists as values
-            # Create a barcode-to-index mapping for reordering
             barcode_list = self.barcode_metadata.get("barcode", [])
             barcode_to_idx = {bc: i for i, bc in enumerate(barcode_list)}
 
-            # Create index mapping to reorder metadata to match self.barcodes order
             reorder_indices = [barcode_to_idx[bc] for bc in self.barcodes if bc in barcode_to_idx]
 
-            # Store each column from the metadata dict
             for col, values_list in self.barcode_metadata.items():
                 try:
-                    # Reorder to match barcode order
                     reordered_values = [values_list[i] for i in reorder_indices]
                     values = np.array(reordered_values)
 
-                    # Handle different data types
                     if values.dtype == object or (len(values) > 0 and isinstance(values[0], str)):
-                        # Convert strings to bytes for HDF5
                         values = np.array(reordered_values, dtype="S")
 
                     metadata_group.create_dataset(
@@ -396,10 +359,8 @@ class IncrementalHDF5Writer:
                 except Exception as e:
                     logger.warning("Could not store metadata column '%s': %s", col, e)
 
-        # Final flush before closing
         self._flush_with_retry()
 
-        # Close HDF5 files
         self.counts_file.close()
         self.metadata_file.close()
 
@@ -411,13 +372,12 @@ class IncrementalHDF5Writer:
                 self.write_error_count,
             )
 
-        # Write QC files
         qc_dir.mkdir(exist_ok=True, parents=True)
         if self.cell_stats:
             write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
 
     def _publish_hdf5_files(self):
-        """Move finalized HDF5 files from local staging to the target output directory."""
+        """Move finalised HDF5 files from local staging to the target output directory."""
         self.final_output_dir.mkdir(exist_ok=True, parents=True)
 
         for filename in ["counts.h5", "metadata.h5"]:
@@ -494,7 +454,6 @@ class IncrementalTextWriter:
             f.close()
         self.coverage_file.close()
 
-        # Compress output text files with standard gzip
         logger.info("Compressing output .txt files...")
         for base in ["A", "C", "G", "T"]:
             txt_file = self.output_dir / f"output.{base}.txt"
@@ -534,11 +493,3 @@ class IncrementalTextWriter:
         qc_dir.mkdir(exist_ok=True, parents=True)
         if self.cell_stats:
             write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
-
-
-def write_parameters_json(parameters: dict, output_path: Path):
-    """Write analysis parameters to JSON file."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w") as f:
-        json.dump(parameters, f, indent=2, default=str)
