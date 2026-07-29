@@ -46,7 +46,7 @@ def process_barcode_worker(args):
             "qc": {
                 "barcode": barcode,
                 "total_reads": n_reads,
-                "total_fragments": n_reads // 2 if n_paired > 0 else n_reads,
+                "total_fragments": n_reads - n_paired // 2,
                 "mean_depth": mean_cov,
                 "coverage_breadth": coverage_breadth,
             },
@@ -93,7 +93,6 @@ class CellProcessor:
 
         logger.info(f"Processing {n_cells} cells at an average of {avg:.0f} reads/cell")
 
-        # Check if sequential processing is forced via config
         if self.config.performance.sequential:
             logger.info("Sequential processing enabled via config")
             return self.process_cells_direct(reads_by_barcode, incremental_writer)
@@ -140,18 +139,32 @@ class CellProcessor:
                     batch_bcs = barcodes[start:end]
                     args = [(bc, reads_by_barcode.pop(bc), self.config) for bc in batch_bcs]
 
-                    try:
-                        futures = [executor.submit(process_barcode_worker, a) for a in args]
-                        batch_results = [f.result() for f in as_completed(futures) if f.result()]
-                        results.extend(batch_results)
+                    futures = {}
+                    batch_results = []
+                    for arg in args:
+                        try:
+                            futures[executor.submit(process_barcode_worker, arg)] = arg
+                        except Exception as exc:
+                            logger.error(
+                                "Worker submission failed; processing cell directly: %s", exc
+                            )
+                            result = process_barcode_worker(arg)
+                            if result:
+                                batch_results.append(result)
 
-                        if incremental_writer:
-                            for r in batch_results:
-                                incremental_writer.write_cell(r)
-                    except Exception as e:
-                        logger.error(f"Batch {i + 1} failed: {e}, falling back to sequential")
-                        pbar.close()
-                        return self.process_cells_direct(reads_by_barcode, incremental_writer)
+                    for future in as_completed(futures):
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            logger.error("Worker failed; processing cell directly: %s", exc)
+                            result = process_barcode_worker(futures[future])
+                        if result:
+                            batch_results.append(result)
+
+                    results.extend(batch_results)
+                    if incremental_writer:
+                        for result in batch_results:
+                            incremental_writer.write_cell(result)
 
                     pbar.update(len(args))
                     gc.collect()
