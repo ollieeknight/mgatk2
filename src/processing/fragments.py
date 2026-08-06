@@ -23,7 +23,7 @@ class Observation:
     base: str
     base_quality: int
     mapping_quality: int
-    read_position: int
+    distance_from_end: int  # bases to the nearest read end; artefacts cluster low
     is_reverse: bool
     clipped: bool
     orientation: str | None
@@ -127,7 +127,7 @@ def read_observations(
             base=base,
             base_quality=quality,
             mapping_quality=read.mapping_quality,
-            read_position=query_pos,
+            distance_from_end=min(query_pos, read_length - 1 - query_pos),
             is_reverse=read.is_reverse,
             clipped=clipped,
             orientation=orientation,
@@ -177,7 +177,7 @@ def resolve_fragment_observations(
                 key=lambda observation: (
                     observation.is_reverse,
                     -observation.mapping_quality,
-                    observation.read_position,
+                    -observation.distance_from_end,
                 ),
             )[0]
         else:
