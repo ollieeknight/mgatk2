@@ -1,4 +1,9 @@
-"""Writers module for mgatk2 output formats."""
+"""Writers module for mgatk2 output formats.
+
+Both writers consume whole shards: one contiguous block of barcode columns
+arriving as dense arrays. That keeps HDF5 writes chunk-aligned and keeps the
+per-position Python work proportional to covered positions only.
+"""
 
 import errno
 import gzip
@@ -7,7 +12,6 @@ import os
 import shutil
 import tempfile
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import h5py
@@ -17,15 +21,37 @@ from core.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
+BASES = ("A", "C", "G", "T")
+STRANDS = ("fwd", "rev")
+
+
+def _cell_stat_rows(result, barcodes) -> list[dict]:
+    """QC rows for the cells in a shard that passed the read-count filter."""
+    rows = []
+    for i in np.flatnonzero(result.kept):
+        n_reads = int(result.n_reads[i])
+        rows.append(
+            {
+                "barcode": barcodes[result.offset + i],
+                "total_reads": n_reads,
+                "total_fragments": n_reads - int(result.n_paired[i]) // 2,
+                "mean_depth": float(result.mean_depth[i]),
+                "coverage_breadth": float(result.coverage_breadth[i]),
+            }
+        )
+    return rows
+
 
 class IncrementalHDF5Writer:
-    """Writes mgatk results incrementally to HDF5 with batched writes."""
+    """Writes mgatk results to HDF5, one contiguous shard of columns at a time."""
 
     # HDF5 can briefly return EAGAIN on networked filesystems.
     MAX_RETRIES = 5
     INITIAL_RETRY_DELAY = 0.1
     MAX_RETRY_DELAY = 5.0
-    BATCH_SIZE = 250
+    # Column-chunk width; shard writes span whole chunks, so gzip runs once each.
+    CHUNK_CELLS = 128
+    CHUNK_CACHE_BYTES = 64 * 1024**2
 
     def __init__(
         self,
@@ -34,12 +60,10 @@ class IncrementalHDF5Writer:
         barcodes: list[str],
         barcode_metadata=None,
     ):
-        """Initialise incremental writer with batch buffering."""
         self.final_output_dir = output_dir / "output"
         self.final_output_dir.mkdir(exist_ok=True, parents=True)
         self.config = config
         self.barcodes = barcodes
-        self.barcode_to_idx = {bc: i for i, bc in enumerate(barcodes)}
         self.n_barcodes = len(barcodes)
         self.n_positions = config.mito_length
         self.barcode_metadata = barcode_metadata
@@ -50,320 +74,142 @@ class IncrementalHDF5Writer:
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self.cell_stats: list[dict] = []
-        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(
-            lambda: {"A": 0, "C": 0, "G": 0, "T": 0}
-        )
-        self.cell_depths: dict[str, int] = {}
-
-        self.counts_file: h5py.File
-        self.metadata_file: h5py.File
+        self.base_totals = np.zeros((self.n_positions, 4), dtype=np.int64)
         self.write_error_count = 0
-        self.batch_buffer: list[dict] = []
         self.cells_written = 0
 
         logger.info("Staging HDF5 output in %s", self.staging_dir)
-
         self._init_hdf5_files()
 
-    def _init_hdf5_files(self):
-        """Create HDF5 files with pre-allocated datasets and keep them open."""
-        bases = ["A", "C", "G", "T"]
-        strands = ["fwd", "rev"]
-
-        self.counts_file = h5py.File(
-            self.output_dir / "counts.h5",
-            "w",
-            libver="earliest",
-        )
-        self.counts_file.attrs["n_cells"] = self.n_barcodes
-        self.counts_file.attrs["n_positions"] = self.n_positions
-        self.counts_file.attrs["mito_chr"] = self.config.mito_chr
-
-        self.counts_file.create_dataset("barcode", data=np.array(self.barcodes, dtype="S"))
-
-        for base in bases:
-            for strand in strands:
-                self.counts_file.create_dataset(
-                    f"{base}_{strand}",
-                    shape=(self.n_positions, self.n_barcodes),
-                    dtype=np.uint16,
-                    compression="gzip",
-                    compression_opts=4,
-                    chunks=(min(1000, self.n_positions), min(100, self.n_barcodes)),
-                    fillvalue=0,
-                )
-
-        for strand in strands:
-            self.counts_file.create_dataset(
-                f"tn5_cuts_{strand}",
-                shape=(self.n_positions, self.n_barcodes),
-                dtype=np.uint16,
-                compression="gzip",
-                compression_opts=4,
-                chunks=(min(1000, self.n_positions), min(100, self.n_barcodes)),
-                fillvalue=0,
-            )
-
-        self.metadata_file = h5py.File(
-            self.output_dir / "metadata.h5",
-            "w",
-            libver="earliest",
-        )
-        self.metadata_file.attrs["mito_chr"] = self.config.mito_chr
-        self.metadata_file.attrs["mito_length"] = self.n_positions
-        self.metadata_file.create_dataset(
-            "coverage",
+    def _matrix(self, handle, name):
+        handle.create_dataset(
+            name,
             shape=(self.n_positions, self.n_barcodes),
             dtype=np.uint16,
             compression="gzip",
             compression_opts=4,
-            chunks=(min(1000, self.n_positions), min(100, self.n_barcodes)),
+            chunks=(self.n_positions, min(self.CHUNK_CELLS, self.n_barcodes)),
             fillvalue=0,
         )
-        self.metadata_file.create_dataset(
-            "mean_depth", shape=(self.n_barcodes,), dtype=np.float32, fillvalue=0
-        )
-        self.metadata_file.create_dataset(
-            "median_depth", shape=(self.n_barcodes,), dtype=np.float32, fillvalue=0
-        )
-        self.metadata_file.create_dataset(
-            "max_depth", shape=(self.n_barcodes,), dtype=np.uint16, fillvalue=0
-        )
-        self.metadata_file.create_dataset(
-            "genome_coverage", shape=(self.n_barcodes,), dtype=np.float32, fillvalue=0
-        )
-        self.metadata_file.create_dataset(
-            "total_bases", shape=(self.n_barcodes,), dtype=np.float32, fillvalue=0
+
+    def _open_h5(self, name):
+        return h5py.File(
+            self.output_dir / name,
+            "w",
+            libver="earliest",
+            rdcc_nbytes=self.CHUNK_CACHE_BYTES,
+            rdcc_nslots=10007,
         )
 
-    def write_cell(self, result: dict):
-        """Buffer a single cell's data and write in batches."""
-        barcode = result["barcode"]
+    def _init_hdf5_files(self):
+        self.counts_file = self._open_h5("counts.h5")
+        self.counts_file.attrs["n_cells"] = self.n_barcodes
+        self.counts_file.attrs["n_positions"] = self.n_positions
+        self.counts_file.attrs["mito_chr"] = self.config.mito_chr
+        self.counts_file.create_dataset("barcode", data=np.array(self.barcodes, dtype="S"))
 
-        if barcode not in self.barcode_to_idx:
-            return  # Skip unknown barcodes
+        for base in BASES:
+            for strand in STRANDS:
+                self._matrix(self.counts_file, f"{base}_{strand}")
+        for strand in STRANDS:
+            self._matrix(self.counts_file, f"tn5_cuts_{strand}")
 
-        self.batch_buffer.append(result)
-
-        if "qc" in result:
-            self.cell_stats.append(result["qc"])
-
-        if len(self.batch_buffer) >= self.BATCH_SIZE:
-            self._write_batch()
-
-    def _write_batch(self):
-        """Write accumulated batch of cells to HDF5 files."""
-        if not self.batch_buffer:
-            return
-
-        bases = ["A", "C", "G", "T"]
-
-        batch_size = len(self.batch_buffer)
-        batch_indices = []
-
-        batch_data = {
-            f"{base}_{strand}": np.zeros((self.n_positions, batch_size), dtype=np.uint16)
-            for base in bases
-            for strand in ["fwd", "rev"]
-        }
-        batch_coverage = np.zeros((self.n_positions, batch_size), dtype=np.uint16)
-        batch_tn5_cuts_fwd = np.zeros((self.n_positions, batch_size), dtype=np.uint16)
-        batch_tn5_cuts_rev = np.zeros((self.n_positions, batch_size), dtype=np.uint16)
-        batch_mean_depth = np.zeros(batch_size, dtype=np.float32)
-        batch_median_depth = np.zeros(batch_size, dtype=np.float32)
-        batch_max_depth = np.zeros(batch_size, dtype=np.uint16)
-        batch_genome_coverage = np.zeros(batch_size, dtype=np.float32)
-        batch_total_bases = np.zeros(batch_size, dtype=np.float32)
-
-        for batch_idx, result in enumerate(self.batch_buffer):
-            barcode = result["barcode"]
-            pileup = result["pileup"]
-            bc_idx = self.barcode_to_idx[barcode]
-            batch_indices.append(bc_idx)
-
-            depths = [counts["depth"] for counts in pileup.values()]
-            mean_depth = np.mean(depths) if depths else 0
-            median_depth = np.median(depths) if depths else 0
-            max_depth = np.max(depths) if depths else 0
-            total_bases = np.sum(depths) if depths else 0
-            positions_covered = sum(1 for d in depths if d > 0)
-            genome_coverage = (
-                (positions_covered / self.n_positions * 100) if self.n_positions > 0 else 0
-            )
-            self.cell_depths[barcode] = mean_depth
-
-            for pos, counts in pileup.items():
-                pos_idx = pos
-                pos_1based = pos + 1
-
-                batch_coverage[pos_idx, batch_idx] = min(counts["depth"], 65535)
-
-                batch_tn5_cuts_fwd[pos_idx, batch_idx] = min(counts.get("tn5_cuts_fwd", 0), 65535)
-                batch_tn5_cuts_rev[pos_idx, batch_idx] = min(counts.get("tn5_cuts_rev", 0), 65535)
-
-                for base in bases:
-                    fwd = counts.get(f"{base}_fwd", 0)
-                    rev = counts.get(f"{base}_rev", 0)
-                    total = counts.get(base, 0)
-
-                    batch_data[f"{base}_fwd"][pos_idx, batch_idx] = min(fwd, 65535)
-                    batch_data[f"{base}_rev"][pos_idx, batch_idx] = min(rev, 65535)
-
-                    if total > 0:
-                        self.position_base_counts[pos_1based][base] += total
-
-            batch_mean_depth[batch_idx] = mean_depth
-            batch_median_depth[batch_idx] = median_depth
-            batch_max_depth[batch_idx] = min(max_depth, 65535)
-            batch_genome_coverage[batch_idx] = genome_coverage
-            batch_total_bases[batch_idx] = total_bases
-
-        try:
-            for key, data in batch_data.items():
-                self._write_batch_with_retry(self.counts_file[key], batch_indices, data)
-
-            self._write_batch_with_retry(
-                self.counts_file["tn5_cuts_fwd"], batch_indices, batch_tn5_cuts_fwd
-            )
-            self._write_batch_with_retry(
-                self.counts_file["tn5_cuts_rev"], batch_indices, batch_tn5_cuts_rev
-            )
-            self._write_batch_with_retry(
-                self.metadata_file["coverage"], batch_indices, batch_coverage
+        self.metadata_file = self._open_h5("metadata.h5")
+        self.metadata_file.attrs["mito_chr"] = self.config.mito_chr
+        self.metadata_file.attrs["mito_length"] = self.n_positions
+        self._matrix(self.metadata_file, "coverage")
+        for name, dtype in (
+            ("mean_depth", np.float32),
+            ("median_depth", np.float32),
+            ("max_depth", np.uint16),
+            ("genome_coverage", np.float32),
+            ("total_bases", np.float32),
+        ):
+            self.metadata_file.create_dataset(
+                name, shape=(self.n_barcodes,), dtype=dtype, fillvalue=0
             )
 
-            for batch_idx, bc_idx in enumerate(batch_indices):
-                self.metadata_file["mean_depth"][bc_idx] = batch_mean_depth[batch_idx]
-                self.metadata_file["median_depth"][bc_idx] = batch_median_depth[batch_idx]
-                self.metadata_file["max_depth"][bc_idx] = batch_max_depth[batch_idx]
-                self.metadata_file["genome_coverage"][bc_idx] = batch_genome_coverage[batch_idx]
-                self.metadata_file["total_bases"][bc_idx] = batch_total_bases[batch_idx]
+    def write_shard(self, result, barcodes):
+        """Write one shard's columns; the block is contiguous by construction."""
+        lo = result.offset
+        hi = lo + result.counts.shape[0]
 
-            self._flush_with_retry()
+        def write():
+            for b_idx, base in enumerate(BASES):
+                for s_idx, strand in enumerate(STRANDS):
+                    self.counts_file[f"{base}_{strand}"][:, lo:hi] = np.ascontiguousarray(
+                        result.counts[:, :, b_idx, s_idx].T
+                    )
+            for s_idx, strand in enumerate(STRANDS):
+                self.counts_file[f"tn5_cuts_{strand}"][:, lo:hi] = np.ascontiguousarray(
+                    result.tn5[:, :, s_idx].T
+                )
+            self.metadata_file["coverage"][:, lo:hi] = np.ascontiguousarray(result.depth.T)
+            self.metadata_file["mean_depth"][lo:hi] = result.mean_depth
+            self.metadata_file["median_depth"][lo:hi] = result.median_depth
+            self.metadata_file["max_depth"][lo:hi] = result.max_depth
+            self.metadata_file["genome_coverage"][lo:hi] = result.coverage_breadth * 100
+            self.metadata_file["total_bases"][lo:hi] = result.total_bases
 
-            self.cells_written += len(self.batch_buffer)
+        self._with_retry(write, "shard write")
+        self._with_retry(self._flush, "flush")
 
-        except Exception as e:
-            logger.error("Failed to write batch after retries: %s", e)
-            raise
+        self.base_totals += result.base_totals
+        self.cell_stats.extend(_cell_stat_rows(result, barcodes))
+        self.cells_written += int(np.count_nonzero(result.kept))
 
-        self.batch_buffer.clear()
+    def _flush(self):
+        self.counts_file.flush()
+        self.metadata_file.flush()
 
-    def _write_batch_with_retry(self, dataset, bc_indices: list[int], data: np.ndarray):
-        """Write batch of cells to HDF5 dataset with retry logic"""
+    def _with_retry(self, action, what: str):
+        """Retry transient EAGAIN from networked filesystems, then give up."""
         delay = self.INITIAL_RETRY_DELAY
-
         for attempt in range(self.MAX_RETRIES):
             try:
-                for batch_idx, bc_idx in enumerate(bc_indices):
-                    dataset[:, bc_idx] = data[:, batch_idx]
-
+                action()
                 if attempt > 0:
-                    logger.info("Batch write succeeded on attempt %s", attempt + 1)
+                    logger.info("%s succeeded on attempt %s", what, attempt + 1)
                 return
             except OSError as e:
-                if e.errno == errno.EAGAIN or e.errno == 11:  # Resource temporarily unavailable
-                    self.write_error_count += 1
-                    if attempt < self.MAX_RETRIES - 1:
-                        logger.warning(
-                            "Temporary batch write error (attempt %d/%d), retrying in %.2fs: %s",
-                            attempt + 1,
-                            self.MAX_RETRIES,
-                            delay,
-                            e,
-                        )
-                        time.sleep(delay)
-                        delay = min(delay * 2, self.MAX_RETRY_DELAY)
-                    else:
-                        logger.error(f"Batch write failed after {self.MAX_RETRIES} attempts")
-                        raise
-                else:
+                if e.errno != errno.EAGAIN:
                     raise
-
-    def _flush_with_retry(self):
-        """Flush HDF5 files with retry logic."""
-        delay = self.INITIAL_RETRY_DELAY
-
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                self.counts_file.flush()
-                self.metadata_file.flush()
-                return
-            except OSError as e:
-                if e.errno == errno.EAGAIN or e.errno == 11:
-                    if attempt < self.MAX_RETRIES - 1:
-                        logger.warning(
-                            "Flush error (attempt %d/%d), retrying in %.2fs",
-                            attempt + 1,
-                            self.MAX_RETRIES,
-                            delay,
-                        )
-                        time.sleep(delay)
-                        delay = min(delay * 2, self.MAX_RETRY_DELAY)
-                    else:
-                        logger.error("Flush failed after %s attempts", self.MAX_RETRIES)
-                        raise
-                else:
+                self.write_error_count += 1
+                if attempt == self.MAX_RETRIES - 1:
+                    logger.error("%s failed after %s attempts", what, self.MAX_RETRIES)
                     raise
+                logger.warning(
+                    "Temporary %s error (attempt %d/%d), retrying in %.2fs: %s",
+                    what,
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    delay,
+                    e,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, self.MAX_RETRY_DELAY)
 
     def finalize(self, qc_dir: Path):
-        """
-        Finalise HDF5 files.
-
-        Flush any remaining batch, write reference alleles, close files, and write QC.
-
-        Args:
-            qc_dir: QC output directory
-        """
+        """Write reference alleles and metadata, close, then publish from staging."""
         from .formats import write_cell_stats
 
-        if self.batch_buffer:
-            self._write_batch()
-
         logger.info("Computing reference alleles...")
-        bases = ["A", "C", "G", "T"]
-        ref_alleles = ["N"] * self.n_positions
-
-        for pos, counts in self.position_base_counts.items():
-            if 1 <= pos <= self.n_positions:
-                max_base = max(bases, key=lambda b: counts[b])
-                if counts[max_base] > 0:
-                    ref_alleles[pos - 1] = max_base
-
-        ref_array = np.array(ref_alleles, dtype="S1")
+        best = self.base_totals.argmax(axis=1)
+        ref_alleles = np.where(
+            self.base_totals.max(axis=1) > 0,
+            np.array(BASES, dtype="S1")[best],
+            b"N",
+        )
         self.metadata_file.create_dataset(
-            "reference", data=ref_array, compression="gzip", compression_opts=4
+            "reference", data=ref_alleles, compression="gzip", compression_opts=4
         )
 
         if self.barcode_metadata is not None:
-            if "barcode_metadata" in self.metadata_file:
-                del self.metadata_file["barcode_metadata"]
-            metadata_group = self.metadata_file.create_group("barcode_metadata")
+            self._write_barcode_metadata()
 
-            barcode_list = self.barcode_metadata.get("barcode", [])
-            barcode_to_idx = {bc: i for i, bc in enumerate(barcode_list)}
-
-            reorder_indices = [barcode_to_idx[bc] for bc in self.barcodes if bc in barcode_to_idx]
-
-            for col, values_list in self.barcode_metadata.items():
-                try:
-                    reordered_values = [values_list[i] for i in reorder_indices]
-                    values = np.array(reordered_values)
-
-                    if values.dtype == object or (len(values) > 0 and isinstance(values[0], str)):
-                        values = np.array(reordered_values, dtype="S")
-
-                    metadata_group.create_dataset(
-                        col, data=values, compression="gzip", compression_opts=4
-                    )
-                except Exception as e:
-                    logger.warning("Could not store metadata column '%s': %s", col, e)
-
-        self._flush_with_retry()
-
+        self._with_retry(self._flush, "flush")
         self.counts_file.close()
         self.metadata_file.close()
-
         self._publish_hdf5_files()
 
         if self.write_error_count > 0:
@@ -376,119 +222,96 @@ class IncrementalHDF5Writer:
         if self.cell_stats:
             write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
 
+    def _write_barcode_metadata(self):
+        group = self.metadata_file.create_group("barcode_metadata")
+        source_order = {bc: i for i, bc in enumerate(self.barcode_metadata.get("barcode", []))}
+        reorder = [source_order[bc] for bc in self.barcodes if bc in source_order]
+
+        for column, values_list in self.barcode_metadata.items():
+            try:
+                values = np.array([values_list[i] for i in reorder])
+                if values.dtype == object or (len(values) and isinstance(values[0], str)):
+                    values = values.astype("S")
+                group.create_dataset(column, data=values, compression="gzip", compression_opts=4)
+            except Exception as e:
+                logger.warning("Could not store metadata column '%s': %s", column, e)
+
     def _publish_hdf5_files(self):
         """Move finalised HDF5 files from local staging to the target output directory."""
         self.final_output_dir.mkdir(exist_ok=True, parents=True)
-
         for filename in ["counts.h5", "metadata.h5"]:
-            src = self.output_dir / filename
             dest = self.final_output_dir / filename
-
             if dest.exists():
                 dest.unlink()
-
-            shutil.move(str(src), str(dest))
-
+            shutil.move(str(self.output_dir / filename), str(dest))
         shutil.rmtree(self.staging_dir, ignore_errors=True)
 
 
 class IncrementalTextWriter:
-    """Writes original mgatk format incrementally."""
+    """Writes the original mgatk text format, one shard at a time."""
 
     def __init__(self, output_dir: Path, config: PipelineConfig, barcodes: list[str]):
         self.output_dir = output_dir / "output"
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self.config = config
-        self.barcodes = set(barcodes)
+        self.barcodes = barcodes
         self.cell_stats: list[dict] = []
-        self.position_base_counts: dict[int, dict[str, int]] = defaultdict(
-            lambda: {"A": 0, "C": 0, "G": 0, "T": 0}
-        )
-        self.cell_depths: dict[str, int] = {}
+        self.base_totals = np.zeros((config.mito_length, 4), dtype=np.int64)
+        self.cell_depths: dict[str, float] = {}
 
-        bases = ["A", "C", "G", "T"]
-        self.base_files = {}
-        for base in bases:
-            self.base_files[base] = open(self.output_dir / f"output.{base}.txt", "w")
-
+        self.base_files = {b: open(self.output_dir / f"output.{b}.txt", "w") for b in BASES}
         self.coverage_file = open(self.output_dir / "output.coverage.txt", "w")
 
-    def write_cell(self, result: dict):
-        barcode = result["barcode"]
-        pileup = result["pileup"]
+    def write_shard(self, result, barcodes):
+        for i in range(result.counts.shape[0]):
+            barcode = barcodes[result.offset + i]
+            self.cell_depths[barcode] = float(result.mean_depth[i])
 
-        if "qc" in result:
-            self.cell_stats.append(result["qc"])
+            depth = result.depth[i]
+            covered = np.flatnonzero(depth)
+            if covered.size:
+                self.coverage_file.write(
+                    "".join(f"{p + 1},{barcode},{depth[p]}\n" for p in covered)
+                )
 
-        depths = [counts["depth"] for counts in pileup.values()]
-        self.cell_depths[barcode] = np.mean(depths) if depths else 0
+            for b_idx, base in enumerate(BASES):
+                fwd = result.counts[i, :, b_idx, 0]
+                rev = result.counts[i, :, b_idx, 1]
+                observed = np.flatnonzero(fwd | rev)
+                if observed.size:
+                    self.base_files[base].write(
+                        "".join(f"{p + 1},{barcode},{fwd[p]},{rev[p]}\n" for p in observed)
+                    )
 
-        pos_data: dict = defaultdict(lambda: defaultdict(lambda: [0, 0]))
-
-        for pos, counts in pileup.items():
-            pos_1based = pos + 1
-            total_cov = counts["depth"]
-
-            if total_cov > 0:
-                self.coverage_file.write(f"{pos_1based},{barcode},{total_cov}\n")
-
-            for base in ["A", "C", "G", "T"]:
-                fwd = counts.get(f"{base}_fwd", 0)
-                rev = counts.get(f"{base}_rev", 0)
-                total = counts.get(base, 0)
-
-                if fwd > 0 or rev > 0:
-                    pos_data[base][pos_1based] = [fwd, rev]
-
-                if total > 0:
-                    self.position_base_counts[pos_1based][base] += total
-
-        for base, positions in pos_data.items():
-            for pos, (fwd, rev) in positions.items():
-                self.base_files[base].write(f"{pos},{barcode},{fwd},{rev}\n")
+        self.base_totals += result.base_totals
+        self.cell_stats.extend(_cell_stat_rows(result, barcodes))
 
     def finalize(self, qc_dir: Path):
         from .formats import write_cell_stats
 
-        for f in self.base_files.values():
-            f.close()
-        self.coverage_file.close()
+        for handle in (*self.base_files.values(), self.coverage_file):
+            handle.close()
 
         logger.info("Compressing output .txt files...")
-        for base in ["A", "C", "G", "T"]:
-            txt_file = self.output_dir / f"output.{base}.txt"
-            gz_file = self.output_dir / f"output.{base}.txt.gz"
-            with open(txt_file, "rb") as f_in:
-                with gzip.open(gz_file, "wb", compresslevel=9) as f_out:
-                    shutil.copyfileobj(f_in, f_out)
+        for name in [f"output.{b}.txt" for b in BASES] + ["output.coverage.txt"]:
+            txt_file = self.output_dir / name
+            with (
+                open(txt_file, "rb") as f_in,
+                gzip.open(self.output_dir / f"{name}.gz", "wb", compresslevel=9) as f_out,
+            ):
+                shutil.copyfileobj(f_in, f_out)
             txt_file.unlink()
 
-        txt_file = self.output_dir / "output.coverage.txt"
-        gz_file = self.output_dir / "output.coverage.txt.gz"
-        with open(txt_file, "rb") as f_in:
-            with gzip.open(gz_file, "wb", compresslevel=9) as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        txt_file.unlink()
-
-        depth_file = self.output_dir / "output.depthTable.txt"
-        with open(depth_file, "w") as f:
+        with open(self.output_dir / "output.depthTable.txt", "w") as f:
             for cell, depth in sorted(self.cell_depths.items()):
                 f.write(f"{cell}\t{depth:.2f}\n")
 
-        ref_alleles = {}
-        for pos in range(1, self.config.mito_length + 1):
-            if pos in self.position_base_counts:
-                counts = self.position_base_counts[pos]
-                max_base = max(["A", "C", "G", "T"], key=lambda b: counts[b])
-                ref_alleles[pos] = max_base if counts[max_base] > 0 else "N"
-            else:
-                ref_alleles[pos] = "N"
-
+        best = self.base_totals.argmax(axis=1)
+        ref_alleles = np.where(self.base_totals.max(axis=1) > 0, np.array(BASES)[best], "N")
         ref_file = self.output_dir / f"{self.config.mito_chr}_refAllele.txt"
         with open(ref_file, "w") as f:
             f.write("pos\tref\n")
-            for pos in range(1, self.config.mito_length + 1):
-                f.write(f"{pos}\t{ref_alleles[pos]}\n")
+            f.write("".join(f"{i + 1}\t{allele}\n" for i, allele in enumerate(ref_alleles)))
 
         qc_dir.mkdir(exist_ok=True, parents=True)
         if self.cell_stats:
