@@ -1,11 +1,13 @@
 import gzip
 import json
 
+import numpy as np
 import pysam
 import pytest
 from click.testing import CliRunner
 
 from analysis.paired_calling import benjamini_hochberg, construct_candidates
+from analysis.quality_stats import QualityHistograms, histogram_median, rank_sum
 from cli import cli
 from core.config import PairedConfig
 from core.exceptions import InvalidInputError
@@ -49,6 +51,19 @@ def _evidence(query_alt, query_depth, baseline_alt, baseline_depth):
     return row
 
 
+def _candidates(rows, config, blacklist=frozenset(), error_rates=None):
+    """Call construct_candidates with empty histograms; counts come from rows."""
+    length = max(row["POS"] for row in rows)
+    return construct_candidates(
+        rows,
+        QualityHistograms(length),
+        QualityHistograms(length),
+        config,
+        set(blacklist),
+        error_rates or {},
+    )
+
+
 def _paired_args(paired_files, output):
     return [
         "paired",
@@ -71,8 +86,8 @@ def test_benjamini_hochberg_correction():
 
 def test_candidate_counts_and_uncertainty(paired_files, tmp_path):
     config = _config(paired_files, tmp_path)
-    shallow = construct_candidates([_evidence(3, 10, 0, 5)], config, set())[0]
-    deep = construct_candidates([_evidence(3, 10, 0, 500)], config, set())[0]
+    shallow = _candidates([_evidence(3, 10, 0, 5)], config)[0]
+    deep = _candidates([_evidence(3, 10, 0, 500)], config)[0]
 
     assert shallow["ENRICHMENT_P"] > deep["ENRICHMENT_P"]
     assert shallow["BASELINE_AF_CI_HIGH"] > deep["BASELINE_AF_CI_HIGH"]
@@ -81,30 +96,71 @@ def test_candidate_counts_and_uncertainty(paired_files, tmp_path):
     row["QUERY_G_FWD"] = 2
     row["QUERY_A_FWD"] = 5
 
-    candidate = construct_candidates([row], config, set())[0]
+    candidate = _candidates([row], config)[0]
 
     assert candidate["QUERY_REF_COUNT"] == 5
     assert candidate["QUERY_REF_COUNT"] != candidate["QUERY_DEPTH"] - candidate["QUERY_ALT_COUNT"]
 
 
-def test_legacy_filters_have_a_stable_order(paired_files, tmp_path):
+def test_filters_have_a_stable_order(paired_files, tmp_path):
     config = _config(
         paired_files,
         tmp_path,
         min_query_depth=10,
         min_baseline_depth=5,
+        circular_edge_bases=0,
     )
-    row = construct_candidates([_evidence(1, 2, 1, 2)], config, {1})[0]
+    row = _candidates([_evidence(1, 2, 1, 2)], config, blacklist={1})[0]
 
-    assert row["LEGACY_FILTER"].split("|") == [
+    assert row["FILTER"].split(";") == [
         "LOW_QUERY_DEPTH",
         "LOW_BASELINE_DEPTH",
         "LOW_ALT_OBSERVATIONS",
         "HIGH_BASELINE_AF",
-        "LOW_QUERY_BASELINE_RATIO",
-        "STRAND_BIAS",
         "BLACKLIST",
+        "STRAND_BIAS",
+        "NOT_SIGNIFICANT",
     ]
+
+
+def test_sequencing_error_rate_gates_weak_alternate_support(paired_files, tmp_path):
+    config = _config(paired_files, tmp_path, min_query_af=0.0, min_alt_observations=1)
+    # 5 alt reads in 1000 is 0.5%: noise at a 1% error rate, signal at 1e-6.
+    row = _evidence(5, 1000, 0, 1000)
+
+    noisy = _candidates([row], config, error_rates={"A>C": 0.01})[0]
+    clean = _candidates([row], config, error_rates={"A>C": 1e-6})[0]
+
+    assert noisy["SEQUENCING_ERROR_P"] > clean["SEQUENCING_ERROR_P"]
+    assert "WEAK_EVIDENCE" in noisy["FILTER"]
+    assert "WEAK_EVIDENCE" not in clean["FILTER"]
+
+
+def test_numt_filter_needs_autosomal_depth(paired_files, tmp_path):
+    row = _evidence(20, 1000, 0, 1000)
+
+    without = _candidates([row], _config(paired_files, tmp_path))[0]
+    with_depth = _candidates(
+        [row], _config(paired_files, tmp_path / "numt", autosomal_median_depth=30.0)
+    )[0]
+
+    assert "POSSIBLE_NUMT" not in without["FILTER"]
+    assert "POSSIBLE_NUMT" in with_depth["FILTER"]
+
+
+def test_histogram_median_and_rank_sum_separate_distributions():
+    low = np.zeros(96, dtype=np.int32)
+    low[10] = 40
+    high = np.zeros(96, dtype=np.int32)
+    high[40] = 40
+
+    assert histogram_median(low) == 10
+    assert histogram_median(low, scale=2) == 20
+
+    z_score, p_value = rank_sum(low, high)
+    assert z_score < 0 and p_value < 0.001
+    assert rank_sum(low, low) == (0.0, 1.0)
+    assert rank_sum(low, np.zeros(96, dtype=np.int32)) == (0.0, 1.0)
 
 
 def test_paired_dry_run(paired_files, tmp_path):
@@ -221,7 +277,7 @@ def test_provenance_tolerates_missing_git(monkeypatch):
 
 
 def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
-    config = _config(paired_files, tmp_path, write_legacy_tsv=True)
+    config = _config(paired_files, tmp_path)
     result = run_paired_pipeline(config)
 
     assert set(result.outputs) == {
@@ -232,7 +288,6 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
         "callable_bed",
         "qc",
         "log",
-        "legacy_tsv",
     }
     with gzip.open(result.outputs["evidence"], "rt") as evidence:
         assert sum(1 for _line in evidence) == 41
@@ -240,36 +295,10 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
         assert list(vcf)
 
     qc = json.loads((tmp_path / "pair.mt_qc.json").read_text())
-    assert qc["schema_version"] == "1.0"
+    assert qc["schema_version"] == "2.0"
     assert qc["reference"]["sha256"]
     assert qc["snv_only"] is True
 
     rerun = run_paired_pipeline(config)
     assert (tmp_path / "pair.paired.log").read_text().count("mgatk2 paired:") == 1
     assert rerun.outputs == result.outputs
-
-
-def test_wes_adapter_warns_and_writes_legacy_output(paired_files, tmp_path):
-    result = CliRunner().invoke(
-        cli,
-        [
-            "wes",
-            "--tumour",
-            str(paired_files["query_bam"]),
-            "--normal",
-            str(paired_files["baseline_bam"]),
-            "--reference",
-            str(paired_files["reference"]),
-            "--output",
-            str(tmp_path),
-            "--sample-name",
-            "legacy",
-            "--min-distance-from-end",
-            "0",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert result.output.count("deprecated") == 1
-    assert (tmp_path / "legacy.mito_somatic.tsv").exists()
-    assert (tmp_path / "legacy.mt_evidence.tsv.gz").exists()
