@@ -14,7 +14,8 @@ from pathlib import Path
 import numpy as np
 import pysam
 
-from analysis.paired_calling import construct_candidates
+from analysis.paired_calling import MIN_ERROR_RATE, construct_candidates
+from analysis.quality_stats import BASE_INDEX, QualityHistograms
 from core.config import PairedConfig, PipelineConfig
 from core.exceptions import InvalidInputError
 from data.blacklists import load_blacklist_positions
@@ -68,25 +69,9 @@ def load_fasta_reference(reference_path: str, requested_chromosome: str) -> tupl
     return chromosome, sequence, hashlib.sha256(sequence.encode("ascii")).hexdigest()
 
 
-def _empty_accumulator(length: int) -> list[dict]:
-    return [
-        {
-            **{f"{base}_{strand}": 0 for base in "ACGT" for strand in ("FWD", "REV")},
-            **{f"{base}_{orientation}": 0 for base in "ACGT" for orientation in ("F1R2", "F2R1")},
-            "depth": 0,
-            "mapq_sum": 0,
-            "baseq_sum": 0,
-            "read_position_sum": 0,
-            "clipped_observations": 0,
-            "overlap_disagreements": 0,
-        }
-        for _position in range(length)
-    ]
-
-
 def collect_sample_evidence(
     alignment_path: str, config: PairedConfig, reference_length: int
-) -> tuple[list[dict], dict]:
+) -> tuple[QualityHistograms, dict]:
     """Collect fragment-collapsed, strand-specific evidence for one sample."""
     pipeline_config = PipelineConfig(
         min_baseq=config.min_baseq,
@@ -107,12 +92,13 @@ def collect_sample_evidence(
             f"{stats['reference_length']}, but FASTA length is {reference_length}"
         )
 
-    evidence = _empty_accumulator(reference_length)
+    histograms = QualityHistograms(reference_length)
     overlap_totals = {
         "overlap_positions": 0,
         "overlap_agreements": 0,
         "overlap_disagreements": 0,
     }
+    orientation_index = {"F1R2": 0, "F2R1": 1}
     for fragment in fragments:
         observations, overlap = resolve_fragment_observations(
             fragment, config.min_baseq, config.min_distance_from_end
@@ -121,45 +107,83 @@ def collect_sample_evidence(
             overlap_totals[key] += int(overlap[key])
         for position in overlap["disagreement_positions"]:
             if 0 <= position < reference_length:
-                evidence[position]["overlap_disagreements"] += 1
+                histograms.overlap_disagreements[position] += 1
         for position, observation in observations.items():
             if not 0 <= position < reference_length:
                 continue
-            row = evidence[position]
-            strand = "REV" if observation.is_reverse else "FWD"
-            row[f"{observation.base}_{strand}"] += 1
-            if observation.orientation:
-                row[f"{observation.base}_{observation.orientation}"] += 1
-            row["depth"] += 1
-            row["mapq_sum"] += observation.mapping_quality
-            row["baseq_sum"] += observation.base_quality
-            row["read_position_sum"] += observation.read_position
-            row["clipped_observations"] += int(observation.clipped)
+            histograms.add(
+                position,
+                BASE_INDEX[observation.base],
+                int(observation.is_reverse),
+                observation.base_quality,
+                observation.mapping_quality,
+                observation.distance_from_end,
+                orientation_index.get(observation.orientation, -1),
+            )
+            if observation.clipped:
+                histograms.clipped[position] += 1
+    histograms.flush()
     stats.update(overlap_totals)
-    stats["counted_observations"] = sum(row["depth"] for row in evidence)
-    return evidence, stats
+    stats["counted_observations"] = int(histograms.depth().sum())
+    return histograms, stats
 
 
-def _mean(total: int, count: int) -> float:
-    return total / count if count else 0.0
+def estimate_error_rates(
+    baseline: QualityHistograms, reference: str, max_real_allele_fraction: float = 0.01
+) -> dict[str, float]:
+    """Per-substitution sequencing error rate, learned from the baseline sample.
+
+    A plain query-versus-baseline Fisher test assumes both samples share an
+    error rate, so unequal depth alone can look significant. Estimating the
+    rate for each REF>ALT substitution gives the caller an absolute noise floor
+    to test against as well.
+    """
+    per_allele = baseline.allele_counts()
+    depth = per_allele.sum(axis=1)
+    reference_index = np.array([BASE_INDEX.get(base, -1) for base in reference], dtype=np.int64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        fraction = np.where(depth[:, None] > 0, per_allele / depth[:, None], 0.0)
+
+    usable = (depth > 0) & (reference_index >= 0)
+    rates = {}
+    for reference_base, reference_position in BASE_INDEX.items():
+        at_reference = usable & (reference_index == reference_position)
+        for alternate_base, alternate_position in BASE_INDEX.items():
+            if alternate_base == reference_base:
+                continue
+            # Exclude sites carrying a plausible real allele, or the estimate
+            # absorbs the very heteroplasmy it is meant to distinguish.
+            noise_only = at_reference & (
+                fraction[:, alternate_position] <= max_real_allele_fraction
+            )
+            observed = int(per_allele[noise_only, alternate_position].sum())
+            total = int(depth[noise_only].sum())
+            rates[f"{reference_base}>{alternate_base}"] = max(
+                observed / total if total else 0.0, MIN_ERROR_RATE
+            )
+    return rates
 
 
 def build_position_evidence(
     chromosome: str,
     reference: str,
-    query: list[dict],
-    baseline: list[dict],
+    query: QualityHistograms,
+    baseline: QualityHistograms,
     config: PairedConfig,
     blacklist: set[int],
 ) -> list[dict]:
     """Build the all-position public evidence table."""
     rows = []
     length = len(reference)
+    samples = (("QUERY", query), ("BASELINE", baseline))
+    depths = {name: histograms.depth() for name, histograms in samples}
+
     for position, ref in enumerate(reference, start=1):
-        query_row = query[position - 1]
-        baseline_row = baseline[position - 1]
-        query_callable = query_row["depth"] >= config.min_query_depth
-        baseline_callable = baseline_row["depth"] >= config.min_baseline_depth
+        index = position - 1
+        query_depth = int(depths["QUERY"][index])
+        baseline_depth = int(depths["BASELINE"][index])
+        query_callable = query_depth >= config.min_query_depth
+        baseline_callable = baseline_depth >= config.min_baseline_depth
         unresolved_edge = not config.shifted_reference_supplied and (
             position <= config.circular_edge_bases or position > length - config.circular_edge_bases
         )
@@ -167,22 +191,12 @@ def build_position_evidence(
             "CHROM": chromosome,
             "POS": position,
             "REF": ref,
-            "QUERY_DEPTH": query_row["depth"],
-            "BASELINE_DEPTH": baseline_row["depth"],
-            "QUERY_COUNTED_FRAGMENTS": query_row["depth"],
-            "BASELINE_COUNTED_FRAGMENTS": baseline_row["depth"],
-            "QUERY_MEAN_MAPQ": _mean(query_row["mapq_sum"], query_row["depth"]),
-            "BASELINE_MEAN_MAPQ": _mean(baseline_row["mapq_sum"], baseline_row["depth"]),
-            "QUERY_MEAN_BASEQ": _mean(query_row["baseq_sum"], query_row["depth"]),
-            "BASELINE_MEAN_BASEQ": _mean(baseline_row["baseq_sum"], baseline_row["depth"]),
-            "QUERY_MEAN_READ_POSITION": _mean(query_row["read_position_sum"], query_row["depth"]),
-            "BASELINE_MEAN_READ_POSITION": _mean(
-                baseline_row["read_position_sum"], baseline_row["depth"]
-            ),
-            "QUERY_CLIPPED_OBSERVATIONS": query_row["clipped_observations"],
-            "BASELINE_CLIPPED_OBSERVATIONS": baseline_row["clipped_observations"],
-            "QUERY_OVERLAP_DISAGREEMENTS": query_row["overlap_disagreements"],
-            "BASELINE_OVERLAP_DISAGREEMENTS": baseline_row["overlap_disagreements"],
+            "QUERY_DEPTH": query_depth,
+            "BASELINE_DEPTH": baseline_depth,
+            "QUERY_CLIPPED_OBSERVATIONS": int(query.clipped[index]),
+            "BASELINE_CLIPPED_OBSERVATIONS": int(baseline.clipped[index]),
+            "QUERY_OVERLAP_DISAGREEMENTS": int(query.overlap_disagreements[index]),
+            "BASELINE_OVERLAP_DISAGREEMENTS": int(baseline.overlap_disagreements[index]),
             "QUERY_CALLABLE": query_callable,
             "BASELINE_CALLABLE": baseline_callable,
             "_JOINT_CALLABLE": (
@@ -192,18 +206,16 @@ def build_position_evidence(
                 and not unresolved_edge
             ),
         }
-        for sample, source in (("QUERY", query_row), ("BASELINE", baseline_row)):
-            for base in "ACGT":
-                for strand in ("FWD", "REV"):
-                    row[f"{sample}_{base}_{strand}"] = source[f"{base}_{strand}"]
-                for orientation in ("F1R2", "F2R1"):
-                    row[f"{sample}_{base}_{orientation}"] = source[f"{base}_{orientation}"]
+        for name, histograms in samples:
+            for base, base_index in BASE_INDEX.items():
+                row[f"{name}_{base}_FWD"] = int(histograms.counts[index, base_index, 0])
+                row[f"{name}_{base}_REV"] = int(histograms.counts[index, base_index, 1])
         rows.append(row)
     return rows
 
 
-def _depth_summary(evidence: list[dict]) -> dict:
-    depths = np.array([row["depth"] for row in evidence], dtype=float)
+def _depth_summary(histograms: QualityHistograms) -> dict:
+    depths = histograms.depth().astype(float)
     return {
         "breadth": float(np.count_nonzero(depths) / len(depths)),
         "depth_quantiles": {
@@ -245,7 +257,8 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
     query, query_stats = collect_sample_evidence(config.query, config, len(reference))
     baseline, baseline_stats = collect_sample_evidence(config.baseline, config, len(reference))
     evidence = build_position_evidence(chromosome, reference, query, baseline, config, blacklist)
-    candidates = construct_candidates(evidence, config, blacklist)
+    error_rates = estimate_error_rates(baseline, reference)
+    candidates = construct_candidates(evidence, query, baseline, config, blacklist, error_rates)
     callable_positions = sum(row["_JOINT_CALLABLE"] for row in evidence)
     qc = {
         "schema_version": config.qc_schema_version,
@@ -300,9 +313,13 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             "callable_positions": callable_positions,
             "candidates": len(candidates),
             "pass_candidates": sum(row["FILTER"] == "PASS" for row in candidates),
-            "legacy_pass_candidates": sum(row["LEGACY_FILTER"] == "PASS" for row in candidates),
         },
-        "legacy_projection_written": config.write_legacy_tsv,
+        "substitution_error_rates": error_rates,
+        "numt_strategy": (
+            "autosomal_median_depth_and_MAPQ"
+            if config.autosomal_median_depth is not None
+            else "MAPQ_only"
+        ),
         "elapsed_seconds": 0.0,
     }
     qc["elapsed_seconds"] = time.monotonic() - started
@@ -312,7 +329,6 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
         evidence,
         candidates,
         qc,
-        config.write_legacy_tsv,
     )
     logger.info(
         "Paired analysis complete: %d positions, %d candidates, %d PASS",
