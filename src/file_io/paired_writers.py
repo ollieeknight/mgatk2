@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -23,14 +24,6 @@ EVIDENCE_COLUMNS = [
         for base in "ACGT"
         for strand in ("FWD", "REV")
     ],
-    "QUERY_COUNTED_FRAGMENTS",
-    "BASELINE_COUNTED_FRAGMENTS",
-    "QUERY_MEAN_MAPQ",
-    "BASELINE_MEAN_MAPQ",
-    "QUERY_MEAN_BASEQ",
-    "BASELINE_MEAN_BASEQ",
-    "QUERY_MEAN_READ_POSITION",
-    "BASELINE_MEAN_READ_POSITION",
     "QUERY_CLIPPED_OBSERVATIONS",
     "BASELINE_CLIPPED_OBSERVATIONS",
     "QUERY_OVERLAP_DISAGREEMENTS",
@@ -39,34 +32,104 @@ EVIDENCE_COLUMNS = [
     "BASELINE_CALLABLE",
 ]
 
+# Grouped by sample throughout, so the table reads in the same order as the
+# VCF sample columns.
+_SAMPLE_CANDIDATE_COLUMNS = [
+    "{sample}_DEPTH",
+    "{sample}_REF_COUNT",
+    "{sample}_REF_FWD",
+    "{sample}_REF_REV",
+    "{sample}_ALT_COUNT",
+    "{sample}_ALT_FWD",
+    "{sample}_ALT_REV",
+    "{sample}_AF",
+    "{sample}_AF_CI_LOW",
+    "{sample}_AF_CI_HIGH",
+    "{sample}_REF_F1R2",
+    "{sample}_REF_F2R1",
+    "{sample}_ALT_F1R2",
+    "{sample}_ALT_F2R1",
+    "{sample}_REF_MBQ",
+    "{sample}_REF_MMQ",
+    "{sample}_REF_MPOS",
+    "{sample}_ALT_MBQ",
+    "{sample}_ALT_MMQ",
+    "{sample}_ALT_MPOS",
+]
+
 CANDIDATE_COLUMNS = [
     "CHROM",
     "POS",
     "REF",
     "ALT",
-    "QUERY_DEPTH",
-    "BASELINE_DEPTH",
-    "QUERY_REF_COUNT",
-    "QUERY_ALT_COUNT",
-    "BASELINE_REF_COUNT",
-    "BASELINE_ALT_COUNT",
-    "QUERY_FWD",
-    "QUERY_REV",
-    "BASELINE_FWD",
-    "BASELINE_REV",
-    "QUERY_AF",
-    "BASELINE_AF",
+    *[column.format(sample="QUERY") for column in _SAMPLE_CANDIDATE_COLUMNS],
+    *[column.format(sample="BASELINE") for column in _SAMPLE_CANDIDATE_COLUMNS],
     "QUERY_BASELINE_RATIO",
-    "QUERY_AF_CI_LOW",
-    "QUERY_AF_CI_HIGH",
-    "BASELINE_AF_CI_LOW",
-    "BASELINE_AF_CI_HIGH",
+    "ERROR_RATE",
+    "SEQUENCING_ERROR_P",
     "ENRICHMENT_P",
     "ENRICHMENT_Q",
     "STRAND_P",
-    "LEGACY_FILTER",
+    "ORIENTATION_P",
+    "QUERY_RSBQ",
+    "QUERY_RSBQ_P",
+    "QUERY_RSMQ",
+    "QUERY_RSMQ_P",
+    "QUERY_RSPOS",
+    "QUERY_RSPOS_P",
     "FILTER",
 ]
+
+VCF_FILTERS = {
+    "LOW_QUERY_DEPTH": "Query depth is below the configured reportability threshold",
+    "LOW_BASELINE_DEPTH": "Baseline depth is below the configured reportability threshold",
+    "LOW_ALT_OBSERVATIONS": "Fewer query alternate observations than required",
+    "LOW_QUERY_AF": "Query allele fraction is below the configured threshold",
+    "HIGH_BASELINE_AF": "Baseline allele fraction is above the configured threshold",
+    "BLACKLIST": "Position overlaps the user-supplied mitochondrial blacklist",
+    "CIRCULAR_EDGE_UNRESOLVED": "Linear-reference edge lacks shifted-reference evidence",
+    "STRAND_BIAS": "Alternate evidence is associated with read strand",
+    "ORIENTATION_BIAS": "Alternate evidence is associated with read-pair orientation",
+    "WEAK_EVIDENCE": "Alternate support is consistent with the estimated substitution error rate",
+    "NOT_SIGNIFICANT": "One-sided query enrichment BH q-value exceeds 0.05",
+    "POSSIBLE_NUMT": "Alternate support is within the depth a single-copy NuMT would contribute",
+}
+
+VCF_INFO = (
+    ("DP", 1, "Integer", "Total counted fragment observations across both samples"),
+    ("QBRATIO", 1, "Float", "Smoothed finite query/baseline allele fraction ratio"),
+    ("ERR", 1, "Float", "Estimated per-substitution sequencing error rate"),
+    ("SEQP", 1, "Float", "Binomial p-value for query alternate support against ERR"),
+    ("EP", 1, "Float", "One-sided Fisher exact query enrichment p-value"),
+    ("EQ", 1, "Float", "Benjamini-Hochberg adjusted enrichment p-value"),
+    ("SP", 1, "Float", "Fisher exact strand-bias p-value in the query"),
+    ("OP", 1, "Float", "Fisher exact read-orientation-bias p-value in the query"),
+    ("RSBQ", 1, "Float", "Alt-vs-ref base quality rank-sum z-score in the query"),
+    ("RSBQ_P", 1, "Float", "Base quality rank-sum p-value in the query"),
+    ("RSMQ", 1, "Float", "Alt-vs-ref mapping quality rank-sum z-score in the query"),
+    ("RSMQ_P", 1, "Float", "Mapping quality rank-sum p-value in the query"),
+    ("RSPOS", 1, "Float", "Alt-vs-ref read-end distance rank-sum z-score in the query"),
+    ("RSPOS_P", 1, "Float", "Read-end distance rank-sum p-value in the query"),
+)
+
+VCF_FORMAT = (
+    ("GT", 1, "String", "Genotype"),
+    ("DP", 1, "Integer", "Counted A/C/G/T fragment observations"),
+    ("AD", "R", "Integer", "Reference and alternate fragment depths"),
+    ("AF", "A", "Float", "Alternate allele fraction"),
+    (
+        "SB",
+        4,
+        "Integer",
+        "Reference forward, reference reverse, alternate forward, alternate reverse",
+    ),
+    ("F1R2", "R", "Integer", "Reference and alternate F1R2 observations"),
+    ("F2R1", "R", "Integer", "Reference and alternate F2R1 observations"),
+    ("MBQ", "R", "Integer", "Median base quality of reference and alternate observations"),
+    ("MMQ", "R", "Integer", "Median mapping quality of reference and alternate observations"),
+    ("MPOS", "R", "Integer", "Median distance from read end for reference and alternate"),
+    ("AFCI", 2, "Float", "Clopper-Pearson 95% interval for the alternate allele fraction"),
+)
 
 
 def _temporary_path(destination: Path, suffix: str = "") -> Path:
@@ -124,34 +187,29 @@ def _write_callable_bed(path: Path, rows: list[dict]) -> None:
 
 
 def _add_vcf_headers(header: pysam.VariantHeader, qc: dict) -> None:
-    header.add_meta("fileformat", value="VCFv4.3")
+    # pysam already emits ##fileformat; a second one would violate VCF 4.3 §1.1.
     header.add_meta("source", value=f"mgatk2-{qc['mgatk2_version']}")
+    header.add_meta("reference", value=f"file://{qc['reference']['path']}")
+    header.add_meta("query_sample", value="QUERY")
+    header.add_meta("baseline_sample", value="BASELINE")
     header.add_meta("mgatk2_query", value=qc["inputs"]["query"]["path"])
     header.add_meta("mgatk2_baseline", value=qc["inputs"]["baseline"]["path"])
     header.contigs.add(qc["reference"]["chromosome"], length=qc["reference"]["length"])
-    for identifier, description in {
-        "LOW_QUERY_DEPTH": "Query depth is below the configured reportability threshold",
-        "LOW_BASELINE_DEPTH": "Baseline depth is below the configured reportability threshold",
-        "BLACKLIST": "Position overlaps the user-supplied mitochondrial blacklist",
-        "CIRCULAR_EDGE_UNRESOLVED": "Linear-reference edge lacks shifted-reference evidence",
-        "STRAND_BIAS": "Alternate evidence is associated with read strand",
-        "NOT_SIGNIFICANT": "One-sided query enrichment BH q-value exceeds 0.05",
-    }.items():
+    for identifier, description in VCF_FILTERS.items():
         header.filters.add(identifier, None, None, description)
-    for identifier, number, value_type, description in (
-        ("QUERY_BASELINE_RATIO", 1, "Float", "Smoothed finite query/baseline AF ratio"),
-        ("ENRICHMENT_P", 1, "Float", "One-sided Fisher exact enrichment p-value"),
-        ("ENRICHMENT_Q", 1, "Float", "Benjamini-Hochberg adjusted enrichment p-value"),
-        ("LEGACY_FILTER", 1, "String", "Migration-era deterministic filter result"),
-    ):
+    for identifier, number, value_type, description in VCF_INFO:
         header.info.add(identifier, number, value_type, description)
-    header.formats.add("DP", 1, "Integer", "Counted A/C/G/T fragment observations")
-    header.formats.add("AD", "R", "Integer", "Reference and alternate fragment depths")
-    header.formats.add("AF", "A", "Float", "Alternate allele fraction")
-    header.formats.add("F1R2", "R", "Integer", "Reference and alternate F1R2 observations")
-    header.formats.add("F2R1", "R", "Integer", "Reference and alternate F2R1 observations")
+    for identifier, number, value_type, description in VCF_FORMAT:
+        header.formats.add(identifier, number, value_type, description)
     header.add_sample("QUERY")
     header.add_sample("BASELINE")
+
+
+def _phred(probability: float) -> float:
+    """Convert an adjusted p-value into a capped phred-scaled QUAL."""
+    if probability <= 0:
+        return 1000.0
+    return min(1000.0, max(0.0, -10 * math.log10(probability)))
 
 
 def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
@@ -168,29 +226,45 @@ def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
                     stop=row["POS"],
                     alleles=(row["REF"], row["ALT"]),
                 )
-                if row["FILTER"] == "PASS":
-                    record.filter.add("PASS")
-                else:
-                    for flag in row["FILTER"].split("|"):
-                        record.filter.add(flag)
-                record.info["QUERY_BASELINE_RATIO"] = row["QUERY_BASELINE_RATIO"]
-                record.info["ENRICHMENT_P"] = row["ENRICHMENT_P"]
-                record.info["ENRICHMENT_Q"] = row["ENRICHMENT_Q"]
-                record.info["LEGACY_FILTER"] = row["LEGACY_FILTER"]
+                record.qual = _phred(row["ENRICHMENT_Q"])
+                for flag in row["FILTER"].split(";"):
+                    record.filter.add(flag)
+
+                record.info["DP"] = row["QUERY_DEPTH"] + row["BASELINE_DEPTH"]
+                record.info["QBRATIO"] = row["QUERY_BASELINE_RATIO"]
+                record.info["ERR"] = row["ERROR_RATE"]
+                record.info["SEQP"] = row["SEQUENCING_ERROR_P"]
+                record.info["EP"] = row["ENRICHMENT_P"]
+                record.info["EQ"] = row["ENRICHMENT_Q"]
+                record.info["SP"] = row["STRAND_P"]
+                record.info["OP"] = row["ORIENTATION_P"]
+                for key in ("RSBQ", "RSBQ_P", "RSMQ", "RSMQ_P", "RSPOS", "RSPOS_P"):
+                    record.info[key] = row[f"QUERY_{key}"]
+
                 for sample in ("QUERY", "BASELINE"):
-                    ref_count = row[f"{sample}_REF_COUNT"]
-                    alt_count = row[f"{sample}_ALT_COUNT"]
-                    record.samples[sample]["DP"] = row[f"{sample}_DEPTH"]
-                    record.samples[sample]["AD"] = (ref_count, alt_count)
-                    record.samples[sample]["AF"] = (row[f"{sample}_AF"],)
-                    record.samples[sample]["F1R2"] = (
-                        row.get(f"{sample}_REF_F1R2", 0),
-                        row.get(f"{sample}_ALT_F1R2", 0),
+                    reference_count = row[f"{sample}_REF_COUNT"]
+                    alternate_count = row[f"{sample}_ALT_COUNT"]
+                    call = record.samples[sample]
+                    # Somatic convention: the query carries the allele, the
+                    # baseline is the reference-state comparator.
+                    call["GT"] = (0, 1) if sample == "QUERY" else (0, 0)
+                    call["DP"] = row[f"{sample}_DEPTH"]
+                    call["AD"] = (reference_count, alternate_count)
+                    call["AF"] = (row[f"{sample}_AF"],)
+                    call["SB"] = (
+                        row[f"{sample}_REF_FWD"],
+                        row[f"{sample}_REF_REV"],
+                        row[f"{sample}_ALT_FWD"],
+                        row[f"{sample}_ALT_REV"],
                     )
-                    record.samples[sample]["F2R1"] = (
-                        row.get(f"{sample}_REF_F2R1", 0),
-                        row.get(f"{sample}_ALT_F2R1", 0),
-                    )
+                    call["F1R2"] = (row[f"{sample}_REF_F1R2"], row[f"{sample}_ALT_F1R2"])
+                    call["F2R1"] = (row[f"{sample}_REF_F2R1"], row[f"{sample}_ALT_F2R1"])
+                    for metric in ("MBQ", "MMQ", "MPOS"):
+                        call[metric] = (
+                            int(row[f"{sample}_REF_{metric}"]),
+                            int(row[f"{sample}_ALT_{metric}"]),
+                        )
+                    call["AFCI"] = (row[f"{sample}_AF_CI_LOW"], row[f"{sample}_AF_CI_HIGH"])
                 output.write(record)
         pysam.tabix_compress(str(source), str(compressed), force=True)
         pysam.tabix_index(str(compressed), preset="vcf", force=True)
@@ -205,72 +279,12 @@ def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
         Path(f"{compressed}.tbi").unlink(missing_ok=True)
 
 
-def _write_legacy(path: Path, candidates: list[dict]) -> None:
-    columns = [
-        "CHROM",
-        "POS",
-        "REF",
-        "ALT",
-        "NORMAL_DEPTH",
-        "TUMOUR_DEPTH",
-        "NORMAL_REF_COUNT",
-        "NORMAL_ALT_COUNT",
-        "NORMAL_FWD",
-        "NORMAL_REV",
-        "TUMOUR_REF_COUNT",
-        "TUMOUR_ALT_COUNT",
-        "TUMOUR_FWD",
-        "TUMOUR_REV",
-        "NORMAL_VAF",
-        "TUMOUR_VAF",
-        "TN_RATIO",
-        "STRAND_BIAS",
-        "FILTER",
-    ]
-    rows = []
-    for row in candidates:
-        total = row["QUERY_FWD"] + row["QUERY_REV"]
-        rows.append(
-            {
-                "CHROM": row["CHROM"],
-                "POS": row["POS"],
-                "REF": row["REF"],
-                "ALT": row["ALT"],
-                "NORMAL_DEPTH": row["BASELINE_DEPTH"],
-                "TUMOUR_DEPTH": row["QUERY_DEPTH"],
-                "NORMAL_REF_COUNT": row["BASELINE_REF_COUNT"],
-                "NORMAL_ALT_COUNT": row["BASELINE_ALT_COUNT"],
-                "NORMAL_FWD": row["BASELINE_FWD"],
-                "NORMAL_REV": row["BASELINE_REV"],
-                "TUMOUR_REF_COUNT": row["QUERY_REF_COUNT"],
-                "TUMOUR_ALT_COUNT": row["QUERY_ALT_COUNT"],
-                "TUMOUR_FWD": row["QUERY_FWD"],
-                "TUMOUR_REV": row["QUERY_REV"],
-                "NORMAL_VAF": row["BASELINE_AF"],
-                "TUMOUR_VAF": row["QUERY_AF"],
-                "TN_RATIO": row["QUERY_BASELINE_RATIO"],
-                "STRAND_BIAS": abs(row["QUERY_FWD"] - row["QUERY_REV"]) / total if total else 0,
-                "FILTER": row["LEGACY_FILTER"],
-            }
-        )
-    temporary = _temporary_path(path)
-    try:
-        with temporary.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns, delimiter="\t")
-            writer.writeheader()
-            writer.writerows(rows)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def write_paired_outputs(
     output_dir: Path,
     sample_name: str,
     evidence: list[dict],
     candidates: list[dict],
     qc: dict,
-    write_legacy: bool = False,
 ) -> dict[str, str]:
     """Write and validate the complete paired output contract."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -287,15 +301,10 @@ def write_paired_outputs(
     _write_gzip_tsv(paths["candidates"], CANDIDATE_COLUMNS, candidates)
     _write_vcf(paths["vcf"], candidates, qc)
     _write_callable_bed(paths["callable_bed"], evidence)
-    if write_legacy:
-        paths["legacy_tsv"] = output_dir / f"{sample_name}.mito_somatic.tsv"
-        _write_legacy(paths["legacy_tsv"], candidates)
     with paths["log"].open("w") as handle:
         handle.write(
             f"mgatk2 paired: {len(evidence)} evidence positions, {len(candidates)} candidates\n"
         )
-        if write_legacy:
-            handle.write("Legacy compatibility projection written; not a primary callset.\n")
     qc["outputs"] = {key: str(value) for key, value in paths.items()}
     _write_json(paths["qc"], qc)
     return {key: str(value) for key, value in paths.items()}
