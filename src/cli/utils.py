@@ -126,7 +126,6 @@ def run_pipeline_command(
     mito_genome,
     ncores,
     verbose,
-    batch_size,
     max_memory,
     base_qual,
     min_mapq,
@@ -135,11 +134,9 @@ def run_pipeline_command(
     min_distance_from_end,
     dedup_mode,
     output_format,
-    sequential,
     dry_run=False,
     nh_max=0,
     nm_max=0,
-    pileup_mode="classic",
     compute_tn5=True,
     original_bam_path=None,
     report_title=None,
@@ -205,12 +202,9 @@ def run_pipeline_command(
             min_distance_from_end,
             dedup_mode,
             output_format,
-            sequential,
-            batch_size,
             max_memory,
             nh_max=nh_max,
             nm_max=nm_max,
-            pileup_mode=pileup_mode,
             compute_tn5=compute_tn5,
         )
 
@@ -224,9 +218,6 @@ def run_pipeline_command(
             report_subtitle = "mgatk2 output analysis"
 
         actual_cores = _determine_cores(ncores)
-
-        worker_batch = batch_size if batch_size is not None else actual_cores
-        logger.info(f"  Worker batch size:      {worker_batch} cells")
 
         run_args = {
             "bam_path": bam_path,
@@ -243,15 +234,11 @@ def run_pipeline_command(
             "min_barcode_reads": min_barcode_reads,
             "mito_chr": mito_chr,
             "n_cores": actual_cores,
-            "worker_batch_size": worker_batch,
-            "io_batch_size": None,  # Will be determined dynamically in pipeline
             "skip_deduplication": skip_dedup,
             "use_fragment_length_dedup": use_fragment_length_dedup,
             "nh_max": nh_max,
             "nm_max": nm_max,
-            "pileup_mode": pileup_mode,
             "compute_tn5": compute_tn5,
-            "sequential": sequential,
             "report_title": report_title,
             "report_subtitle": report_subtitle,
             "working_directory": working_directory,
@@ -322,12 +309,9 @@ def _log_configuration(
     min_distance_from_end,
     dedup_mode,
     output_format,
-    sequential,
-    batch_size,
     max_memory,
     nh_max=0,
     nm_max=0,
-    pileup_mode="classic",
     compute_tn5=True,
 ):
     """Log the pipeline configuration."""
@@ -361,12 +345,6 @@ def _log_configuration(
         cores_msg = str(actual_cores)
     logger.info("  Cores:                  %s", cores_msg)
 
-    if batch_size is None:
-        batch_size = actual_cores
-        batch_msg = f"{batch_size} (matches cores)"
-    else:
-        batch_msg = str(batch_size)
-
     logger.info("  Barcode tag:            %s", barcode_tag)
     if barcode_file is None:
         logger.info("  Min barcode reads:      %s", min_barcode_reads)
@@ -385,14 +363,11 @@ def _log_configuration(
     logger.info("  Min dist from end:      %sbp", min_distance_from_end)
     logger.info("  NH max (multi-mapper):  %s", nh_max if nh_max > 0 else "disabled")
     logger.info("  NM max (mismatches):    %s", nm_max if nm_max > 0 else "disabled")
-    logger.info("  Pileup mode:            %s", pileup_mode)
     logger.info("  Compute Tn5 cuts:       %s", compute_tn5)
     logger.info("  Deduplication:          %s", dedup_display)
-    logger.info("  Worker batch size:      %s cells", batch_msg)
 
     format_display = "text files (.txt.gz)" if output_format == "txt" else "HDF5 (.h5)"
     logger.info("  Output format:          %s", format_display)
-    logger.info("  Sequential processing:  %s", sequential)
     logger.info("  Using mitochondrial chromosome: %s", mito_chr)
 
     if barcode_file == "bulk":
