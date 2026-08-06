@@ -1,245 +1,311 @@
-"""Pileup generation and filtering for mtDNA analysis."""
+"""Streaming per-cell base counting.
+
+One shard = one contiguous slice of the barcode list. A shard worker opens the
+BAM itself, streams chrM once, and accumulates directly into dense per-cell
+count arrays. Reads are never materialised as Python objects, so worker memory
+is O(cells in shard) rather than O(reads in BAM).
+"""
 
 from __future__ import annotations
 
+import warnings
+from dataclasses import dataclass
+
 import numpy as np
+import pysam
 
-from core.config import PipelineConfig, SimpleRead
+from core.config import PipelineConfig
+
+# ASCII -> base index; 4 means "not ACGT" and is discarded.
+BASE_LUT = np.full(256, 4, dtype=np.uint8)
+for _char, _idx in (("A", 0), ("C", 1), ("G", 2), ("T", 3)):
+    BASE_LUT[ord(_char)] = _idx
+    BASE_LUT[ord(_char.lower())] = _idx
+
+# Reused so the hot loop never allocates a position vector.
+_POSITIONS = np.arange(1 << 16, dtype=np.int32)
+
+CIGAR_MATCH = (0, 7, 8)
+CIGAR_REF_ONLY = (2, 3)
+CIGAR_QUERY_ONLY = (1, 4)
 
 
-class PileupGenerator:
-    """Generate pileup data from aligned reads with quality filtering."""
+@dataclass
+class ShardResult:
+    """Finished counts for one contiguous block of barcodes."""
 
-    def __init__(self, config: PipelineConfig):
+    offset: int  # first column index in the output matrices
+    counts: np.ndarray  # (n_cells, mito_length, 4, 2) uint16
+    tn5: np.ndarray  # (n_cells, mito_length, 2) uint16
+    depth: np.ndarray  # (n_cells, mito_length) uint16
+    base_totals: np.ndarray  # (mito_length, 4) int64, summed over cells
+    n_reads: np.ndarray  # (n_cells,) int64, reads kept per cell
+    n_paired: np.ndarray  # (n_cells,) int64, of which flagged as paired
+    mean_depth: np.ndarray
+    median_depth: np.ndarray
+    max_depth: np.ndarray
+    total_bases: np.ndarray
+    coverage_breadth: np.ndarray
+    kept: np.ndarray  # (n_cells,) bool, passed min_reads_per_cell
+    total_reads: int  # chrM records seen (identical across shards)
+    duplicate_reads: int  # duplicates dropped for this shard's cells
+
+
+def plan_shards(n_cells: int, config: PipelineConfig) -> int:
+    """Cells per shard, sized so all concurrent shards fit the memory budget."""
+    n_cores = max(1, config.performance.n_cores)
+    budget = config.performance.max_memory_gb * 1e9 * 0.6
+    affordable = max(1, int(budget / (n_cores * config.bytes_per_cell())))
+    even_split = max(1, -(-n_cells // n_cores))
+    return min(even_split, affordable)
+
+
+def scan_shard(task: tuple) -> ShardResult:
+    """Stream chrM once and count bases for this shard's barcodes."""
+    bam_path, config, barcodes, offset, reference_filename = task
+    return _Shard(bam_path, config, barcodes, offset, reference_filename).run()
+
+
+class _Shard:
+    def __init__(self, bam_path, config: PipelineConfig, barcodes, offset, reference_filename):
+        self.bam_path = str(bam_path)
         self.config = config
-        self.bases = ["A", "C", "G", "T"]
-        self.base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
+        self.offset = offset
+        self.reference_filename = reference_filename
+        self.index_of = {bc: i for i, bc in enumerate(barcodes)}
+        self.n_cells = len(barcodes)
+        self.is_bulk = list(barcodes) == ["bulk"]
 
-    def generate_pileup(self, reads: list[SimpleRead]) -> dict[int, dict[str, int]]:
-        """Count bases at each position, stratified by strand."""
-        if not reads:
-            return {}
-        if getattr(self.config, "pileup_mode", "classic") == "fast":
-            return self._generate_pileup_fast(reads)
-        return self._generate_pileup_classic(reads)
+        length = config.mito_length
+        global _POSITIONS
+        if length > _POSITIONS.size:
+            _POSITIONS = np.arange(length, dtype=np.int32)
+        self.counts = np.zeros((self.n_cells, length, 4, 2), dtype=np.uint32)
+        self.tn5 = (
+            np.zeros((self.n_cells, length, 2), dtype=np.uint32) if config.compute_tn5 else None
+        )
+        self.n_reads = np.zeros(self.n_cells, dtype=np.int64)
+        self.n_paired = np.zeros(self.n_cells, dtype=np.int64)
 
-    def _generate_pileup_classic(self, reads: list[SimpleRead]) -> dict[int, dict[str, int]]:
-        """Original per-base Python loop. Reference implementation — do not modify."""
-        mito_length = self.config.mito_length
-        base_counts = np.zeros((mito_length, 4, 2), dtype=np.uint32)
-        compute_tn5 = getattr(self.config, "compute_tn5", True)
-        tn5_cuts = np.zeros((mito_length, 2), dtype=np.uint32) if compute_tn5 else None
+    def _open(self):
+        if self.bam_path.lower().endswith(".cram"):
+            return pysam.AlignmentFile(
+                self.bam_path, "rc", reference_filename=self.reference_filename
+            )
+        # BGZF decompression threads: the shard's wall time is decode-bound.
+        return pysam.AlignmentFile(self.bam_path, "rb", threads=2)
 
-        min_mapq = self.config.quality.min_mapq
-        min_baseq = self.config.quality.min_baseq
-        min_dist_from_end = self.config.quality.min_distance_from_end
-        base_to_idx = self.base_to_idx
+    def run(self) -> ShardResult:
+        total_reads, duplicates = self._accumulate()
+        self._apply_strand_bias()
+        return self._summarise(total_reads, duplicates)
 
-        for read in reads:
-            if read.mapping_quality < min_mapq:
-                continue
+    def _accumulate(self) -> tuple[int, int]:
+        config = self.config
+        quality = config.quality
+        length = config.mito_length
+        tag = config.barcode_tag
+        nh_max = quality.nh_max
+        nm_max = quality.nm_max
+        min_mapq = quality.min_mapq
+        min_baseq = quality.min_baseq
+        min_dist = quality.min_distance_from_end
+        dedup = not config.dedup.skip
+        use_fragment_length = config.dedup.use_fragment_length
+        index_of = self.index_of
+        is_bulk = self.is_bulk
+        counts = self.counts
+        tn5 = self.tn5
+        n_reads = self.n_reads
+        n_paired = self.n_paired
+        seen: list[set] = [set() for _ in range(self.n_cells)] if dedup else []
 
-            is_reverse = read.is_reverse
-            strand_idx = 1 if is_reverse else 0
-            qualities = read.query_qualities
-            sequence = read.query_sequence
-            sequence_view = memoryview(sequence)
-            read_length = len(sequence)
+        total_reads = 0
+        duplicates = 0
+        default_quals = np.full(1024, 60, dtype=np.uint8)
 
-            if tn5_cuts is not None:
-                if is_reverse:
-                    start_pos = read.reference_start + read_length - 1
-                    if 0 <= start_pos < mito_length:
-                        tn5_cuts[start_pos, 1] += 1
+        with self._open() as bam:
+            for read in bam.fetch(config.mito_chr):
+                total_reads += 1
+
+                if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                    continue
+
+                if is_bulk:
+                    cell = 0
                 else:
-                    start_pos = read.reference_start
-                    if 0 <= start_pos < mito_length:
-                        tn5_cuts[start_pos, 0] += 1
-
-            ref_pos = read.reference_start
-            query_pos = 0
-
-            for op, length in read.cigar:
-                if op in [0, 7, 8]:
-                    start_refpos = max(0, ref_pos)
-                    end_refpos = min(ref_pos + length, mito_length)
-
-                    if start_refpos >= end_refpos:
-                        query_pos += length
-                        ref_pos += length
+                    barcode = read.get_tag(tag) if read.has_tag(tag) else None
+                    cell = index_of.get(barcode)
+                    if cell is None:
                         continue
 
-                    offset = start_refpos - ref_pos
-
-                    if min_dist_from_end > 0:
-                        valid_q_start = min_dist_from_end
-                        valid_q_end = read_length - min_dist_from_end
-                    else:
-                        valid_q_start = 0
-                        valid_q_end = read_length
-
-                    for i in range(end_refpos - start_refpos):
-                        current_qpos = query_pos + offset + i
-
-                        if not (valid_q_start <= current_qpos < valid_q_end):
-                            continue
-
-                        if qualities[current_qpos] < min_baseq:
-                            continue
-
-                        base = chr(sequence_view[current_qpos]).upper()
-                        base_idx = base_to_idx.get(base)
-                        if base_idx is None:
-                            continue
-
-                        base_counts[start_refpos + i, base_idx, strand_idx] += 1
-
-                    query_pos += length
-                    ref_pos += length
-                elif op in [2, 3]:
-                    ref_pos += length
-                elif op == 4:
-                    query_pos += length
-
-        return self._build_pileup_dict(base_counts, tn5_cuts)
-
-    def _generate_pileup_fast(self, reads: list[SimpleRead]) -> dict[int, dict[str, int]]:
-        """Use NumPy masks in place of the inner per-base loop."""
-        mito_length = self.config.mito_length
-        base_counts = np.zeros((mito_length, 4, 2), dtype=np.uint32)
-        compute_tn5 = getattr(self.config, "compute_tn5", True)
-        tn5_cuts = np.zeros((mito_length, 2), dtype=np.uint32) if compute_tn5 else None
-
-        min_mapq = self.config.quality.min_mapq
-        min_baseq = self.config.quality.min_baseq
-        min_dist = self.config.quality.min_distance_from_end
-
-        base_ascii = ((65, 0), (67, 1), (71, 2), (84, 3))
-
-        for read in reads:
-            if read.mapping_quality < min_mapq:
-                continue
-
-            strand_idx = 1 if read.is_reverse else 0
-            sequence = read.query_sequence
-            qualities = read.query_qualities
-            read_length = len(sequence)
-
-            if tn5_cuts is not None:
-                if read.is_reverse:
-                    tp = read.reference_start + read_length - 1
-                    if 0 <= tp < mito_length:
-                        tn5_cuts[tp, 1] += 1
-                else:
-                    tp = read.reference_start
-                    if 0 <= tp < mito_length:
-                        tn5_cuts[tp, 0] += 1
-
-            ref_pos = read.reference_start
-            query_pos = 0
-
-            for op, length in read.cigar:
-                if op in [0, 7, 8]:
-                    r_start = max(0, ref_pos)
-                    r_end = min(ref_pos + length, mito_length)
-
-                    if r_start >= r_end:
-                        query_pos += length
-                        ref_pos += length
+                # Filters kept in step with mgatk's filterClipBam.py.
+                if nh_max > 0 and read.has_tag("NH") and read.get_tag("NH") > nh_max:
+                    continue
+                if nm_max > 0:
+                    nm = next(
+                        (read.get_tag(t) for t in ("NM", "nM") if read.has_tag(t)),
+                        None,
+                    )
+                    if nm is not None and nm > nm_max:
                         continue
 
-                    q_off = r_start - ref_pos
-                    run_len = r_end - r_start
-                    q_start = query_pos + q_off
-                    q_end = q_start + run_len
+                if dedup:
+                    key = (read.reference_start << 1) | int(read.is_reverse)
+                    if use_fragment_length:
+                        key |= abs(read.template_length or 0) << 20
+                    cell_seen = seen[cell]
+                    if key in cell_seen:
+                        duplicates += 1
+                        continue
+                    cell_seen.add(key)
 
-                    q_bytes = np.frombuffer(sequence[q_start:q_end], dtype=np.uint8)
-                    q_quals = qualities[q_start:q_end]
+                n_reads[cell] += 1
+                n_paired[cell] += read.is_paired
 
-                    valid = q_quals >= min_baseq
+                if read.mapping_quality < min_mapq:
+                    continue
 
-                    if min_dist > 0:
-                        abs_qpos = np.arange(q_start, q_end, dtype=np.int32)
-                        dist_mask = (abs_qpos >= min_dist) & (abs_qpos < read_length - min_dist)
-                        valid = valid & dist_mask
+                sequence = read.query_sequence
+                if not sequence:
+                    continue
 
-                    for b_ascii, b_idx in base_ascii:
-                        hits = valid & (q_bytes == b_ascii)
-                        if hits.any():
-                            base_counts[r_start:r_end][hits, b_idx, strand_idx] += 1
+                strand = 1 if read.is_reverse else 0
 
-                    query_pos += length
-                    ref_pos += length
-                elif op in [2, 3]:
-                    ref_pos += length
-                elif op == 4:
-                    query_pos += length
+                if tn5 is not None:
+                    # Tn5 inserts at the read's outermost aligned reference base.
+                    cut = (read.reference_end - 1) if read.is_reverse else read.reference_start
+                    if 0 <= cut < length:
+                        tn5[cell, cut, strand] += 1
 
-        return self._build_pileup_dict(base_counts, tn5_cuts)
+                read_length = len(sequence)
+                bases = BASE_LUT[np.frombuffer(sequence.encode("ascii"), dtype=np.uint8)]
+                raw_quals = read.query_qualities
+                if raw_quals is None:
+                    if read_length > default_quals.size:
+                        default_quals = np.full(read_length, 60, dtype=np.uint8)
+                    quals = default_quals[:read_length]
+                else:
+                    quals = np.frombuffer(raw_quals, dtype=np.uint8)
 
-    def _build_pileup_dict(
-        self,
-        base_counts: np.ndarray,
-        tn5_cuts: np.ndarray | None,
-    ) -> dict[int, dict[str, int]]:
-        """Convert base_counts array to pileup dict. Shared by both engines."""
-        mito_length = self.config.mito_length
-        bases = self.bases
-        pileup = {}
+                self._count_read(
+                    counts[cell],
+                    bases,
+                    quals,
+                    read.reference_start,
+                    read.cigartuples or [],
+                    read_length,
+                    strand,
+                    min_baseq,
+                    min_dist,
+                    length,
+                )
 
-        for pos in range(mito_length):
-            total_fwd = base_counts[pos, :, 0].sum()
-            total_rev = base_counts[pos, :, 1].sum()
-            depth = total_fwd + total_rev
+        return total_reads, duplicates
 
-            tn5_fwd = tn5_cuts[pos, 0].item() if tn5_cuts is not None else 0
-            tn5_rev = tn5_cuts[pos, 1].item() if tn5_cuts is not None else 0
+    @staticmethod
+    def _count_read(
+        cell_counts,
+        bases,
+        quals,
+        reference_start,
+        cigar,
+        read_length,
+        strand,
+        min_baseq,
+        min_dist,
+        mito_length,
+    ):
+        """Add one read's usable bases into a (mito_length, 4, 2) cell block."""
+        # Query positions outside this window are too close to a read end.
+        window_start = min_dist
+        window_end = read_length - min_dist
 
-            if depth == 0 and tn5_fwd == 0 and tn5_rev == 0:
-                continue
+        ref_pos = reference_start
+        query_pos = 0
 
-            pos_counts = {
-                "depth": depth.item(),
-                "tn5_cuts_fwd": tn5_fwd,
-                "tn5_cuts_rev": tn5_rev,
-            }
+        for op, op_length in cigar:
+            if op in CIGAR_MATCH:
+                q_start = max(query_pos, window_start)
+                q_end = min(query_pos + op_length, window_end)
+                # Clip the same amount off the reference side to stay in register.
+                r_start = ref_pos + (q_start - query_pos)
+                r_end = r_start + (q_end - q_start)
+                if r_start < 0:
+                    q_start -= r_start
+                    r_start = 0
+                if r_end > mito_length:
+                    q_end -= r_end - mito_length
+                    r_end = mito_length
 
-            for base_idx in range(4):
-                base = bases[base_idx]
-                fwd_count = base_counts[pos, base_idx, 0].item()
-                rev_count = base_counts[pos, base_idx, 1].item()
-                pos_counts[base] = fwd_count + rev_count
-                pos_counts[f"{base}_fwd"] = fwd_count
-                pos_counts[f"{base}_rev"] = rev_count
+                if q_start < q_end:
+                    block_bases = bases[q_start:q_end]
+                    usable = (quals[q_start:q_end] >= min_baseq) & (block_bases < 4)
+                    # Reference positions within a block are unique, so a plain
+                    # fancy-index add is exact (no np.add.at needed).
+                    cell_counts[_POSITIONS[r_start:r_end][usable], block_bases[usable], strand] += 1
 
-            pileup[pos] = pos_counts
+                query_pos += op_length
+                ref_pos += op_length
+            elif op in CIGAR_REF_ONLY:
+                ref_pos += op_length
+            elif op in CIGAR_QUERY_ONLY:
+                query_pos += op_length
 
-        return pileup
-
-    def filter_strand_bias(self, pileup: dict[int, dict[str, int]]) -> dict[int, dict[str, int]]:
-        """Remove positions where most reads come from a single strand."""
-        filtered = {}
+    def _apply_strand_bias(self):
+        """Zero any base whose observations come too heavily from one strand."""
         max_bias = self.config.quality.max_strand_bias
-        bases = self.bases
+        if max_bias >= 1.0:
+            return  # a ratio can never exceed 1.0, so the filter is a no-op
 
-        for pos, counts in pileup.items():
-            filtered_counts = counts.copy()
+        per_base = self.counts.sum(axis=3, keepdims=True)
+        biased = (self.counts.max(axis=3, keepdims=True) > max_bias * per_base) & (per_base > 0)
+        self.counts[np.broadcast_to(biased, self.counts.shape)] = 0
 
-            for base in bases:
-                fwd = counts[f"{base}_fwd"]
-                rev = counts[f"{base}_rev"]
-                total = fwd + rev
+    def _summarise(self, total_reads: int, duplicates: int) -> ShardResult:
+        length = self.config.mito_length
+        kept = self.n_reads >= max(1, self.config.min_reads_per_cell)
+        if not kept.all():
+            self.counts[~kept] = 0
+            if self.tn5 is not None:
+                self.tn5[~kept] = 0
 
-                if total > 0:
-                    bias = max(fwd, rev) / total
-                    if bias > max_bias:
-                        filtered_counts[base] = 0
-                        filtered_counts[f"{base}_fwd"] = 0
-                        filtered_counts[f"{base}_rev"] = 0
+        depth = self.counts.sum(axis=(2, 3), dtype=np.int64)
+        positions_covered = (depth > 0).sum(axis=1)
+        total_bases = depth.sum(axis=1)
 
-            filtered_counts["depth"] = sum(filtered_counts[b] for b in bases)
+        # Depth statistics ignore uncovered positions, matching mgatk2 <= 1.2.
+        covered_only = depth.astype(np.float32)
+        covered_only[depth == 0] = np.nan
+        with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+            # An entirely uncovered cell is expected, not exceptional.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            mean_depth = np.where(positions_covered > 0, total_bases / positions_covered, 0.0)
+            median_depth = np.nan_to_num(np.nanmedian(covered_only, axis=1))
+        del covered_only
 
-            if filtered_counts["depth"] > 0:
-                filtered[pos] = filtered_counts
+        base_totals = self.counts.sum(axis=(0, 3), dtype=np.int64)
+        np.minimum(self.counts, 65535, out=self.counts)
+        if self.tn5 is None:
+            tn5 = np.zeros((self.n_cells, length, 2), dtype=np.uint16)
+        else:
+            np.minimum(self.tn5, 65535, out=self.tn5)
+            tn5 = self.tn5.astype(np.uint16)
 
-        return filtered
+        return ShardResult(
+            offset=self.offset,
+            counts=self.counts.astype(np.uint16),
+            tn5=tn5,
+            depth=np.minimum(depth, 65535).astype(np.uint16),
+            base_totals=base_totals,
+            n_reads=self.n_reads,
+            n_paired=self.n_paired,
+            mean_depth=mean_depth,
+            median_depth=median_depth,
+            max_depth=np.minimum(depth.max(axis=1), 65535).astype(np.uint16),
+            total_bases=total_bases,
+            coverage_breadth=positions_covered / length,
+            kept=kept,
+            total_reads=total_reads,
+            duplicate_reads=duplicates,
+        )
