@@ -36,8 +36,6 @@ def call(
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
-    sequential = ncores == 1
-
     try:
         input_path = Path(bam_path)
         bam_files = sorted(input_path.glob("*.bam"))
@@ -74,7 +72,6 @@ def call(
                 mito_genome=mito_chr,
                 ncores=ncores,
                 verbose=verbose,
-                batch_size=1,
                 max_memory=max_memory,
                 base_qual=base_qual,
                 min_mapq=min_mapq,
@@ -83,7 +80,6 @@ def call(
                 min_distance_from_end=min_distance_from_end,
                 dedup_mode=dedup_mode,
                 output_format=output_format,
-                sequential=sequential,
                 dry_run=False,
             )
             if status:
