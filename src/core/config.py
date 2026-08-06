@@ -30,16 +30,13 @@ class DeduplicationConfig:
 class PerformanceConfig:
     """Resource management."""
 
-    n_cores: int = 8  # CPU cores for parallel processing
-    worker_batch_size: int = 8  # Cells per parallel batch
-    io_batch_size: int = 100  # Cells before HDF5 flush (dynamic: 10% of barcodes)
+    n_cores: int = 8  # CPU cores; also the default number of barcode shards
     max_memory_gb: float = 128.0
-    sequential: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class SimpleRead:
-    """Lightweight BAM read"""
+    """Lightweight BAM read. Used by the paired/bulk fragment path only."""
 
     reference_start: int
     is_reverse: bool
@@ -106,13 +103,13 @@ class PairedConfig:
     min_query_baseline_ratio: float = 3.0
     max_strand_bias: float = 0.9
     custom_blacklist: str | None = None
+    autosomal_median_depth: float | None = None
     input_is_consensus: bool = False
     shifted_reference_supplied: bool = False
     circular_edge_bases: int = 500
-    evidence_schema_version: str = "1.0"
-    candidate_schema_version: str = "1.0"
-    qc_schema_version: str = "1.0"
-    write_legacy_tsv: bool = True
+    evidence_schema_version: str = "2.0"
+    candidate_schema_version: str = "2.0"
+    qc_schema_version: str = "2.0"
 
     def __post_init__(self) -> None:
         for name in (
@@ -143,6 +140,8 @@ class PairedConfig:
             raise ValueError("sample_name must be a non-empty filename prefix")
         if self.input_is_consensus and self.deduplication != "none":
             raise ValueError("consensus inputs require --deduplication none")
+        if self.autosomal_median_depth is not None and self.autosomal_median_depth < 0:
+            raise ValueError("autosomal_median_depth must be non-negative")
 
 
 class PipelineConfig:
@@ -157,17 +156,13 @@ class PipelineConfig:
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,
         n_cores: int = 8,
-        worker_batch_size: int | None = None,
-        io_batch_size: int | None = None,
         max_memory_gb: float = 128.0,
-        sequential: bool = False,
         min_reads_per_cell: int = 1,
         barcode_tag: str = "CB",
         mito_chr: str = "chrM",
         mito_length: int = 16569,
         nh_max: int = 0,
         nm_max: int = 0,
-        pileup_mode: str = "fast",
         compute_tn5: bool = True,
     ):
         self.quality = QualityThresholds(
@@ -181,16 +176,13 @@ class PipelineConfig:
         self.dedup = DeduplicationConfig(
             skip=skip_deduplication, use_fragment_length=use_fragment_length_dedup
         )
-        self.performance = PerformanceConfig(
-            n_cores=n_cores,
-            worker_batch_size=worker_batch_size or n_cores,
-            io_batch_size=io_batch_size or 100,
-            max_memory_gb=max_memory_gb,
-            sequential=sequential,
-        )
+        self.performance = PerformanceConfig(n_cores=n_cores, max_memory_gb=max_memory_gb)
         self.min_reads_per_cell = min_reads_per_cell
         self.barcode_tag = barcode_tag
         self.mito_chr = mito_chr
         self.mito_length = mito_length
-        self.pileup_mode = pileup_mode  # "classic" | "fast"
         self.compute_tn5 = compute_tn5
+
+    # uint32 base counts (4 bases x 2 strands) plus uint32 Tn5 cuts (2 strands).
+    def bytes_per_cell(self) -> int:
+        return self.mito_length * (4 * 2 + 2) * 4
