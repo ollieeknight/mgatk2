@@ -24,7 +24,6 @@ def run(
     output_dir,
     ncores,
     verbose,
-    batch_size,
     max_memory,
     base_qual,
     min_mapq,
@@ -34,12 +33,9 @@ def run(
     dedup_mode,
     output_format,
     dry_run,
-    pileup_mode,
     compute_tn5,
 ):
     """Run mgatk2 with optimised defaults"""
-    sequential = ncores == 1
-
     try:
         status = run_pipeline_command(
             bam_path=bam_path,
@@ -50,7 +46,6 @@ def run(
             mito_genome=mito_genome,
             ncores=ncores,
             verbose=verbose,
-            batch_size=batch_size,
             max_memory=max_memory,
             base_qual=base_qual,
             min_mapq=min_mapq,
@@ -59,9 +54,7 @@ def run(
             min_distance_from_end=min_distance_from_end,
             dedup_mode=dedup_mode,
             output_format=output_format,
-            sequential=sequential,
             dry_run=dry_run,
-            pileup_mode=pileup_mode,
             compute_tn5=compute_tn5,
             original_bam_path=bam_path,
             report_title=get_10x_parent_directory_name(bam_path),
