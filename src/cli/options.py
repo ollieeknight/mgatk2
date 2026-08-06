@@ -26,6 +26,15 @@ def paired_options(f):
         help="Declare upstream UMI-consensus inputs (requires --deduplication none)",
     )(f)
     f = click.option("--circular-edge-bases", default=500, type=int, show_default=True)(f)
+    f = click.option(
+        "--autosomal-median-depth",
+        default=None,
+        type=float,
+        help=(
+            "Median autosomal depth of the query. Enables the POSSIBLE_NUMT filter, "
+            "which flags alternate support a single-copy NuMT could account for."
+        ),
+    )(f)
     f = click.option("--custom-blacklist", type=click.Path(exists=True, dir_okay=False))(f)
     f = click.option("--min-query-baseline-ratio", default=3.0, type=float, show_default=True)(f)
     f = click.option("--max-baseline-af", default=0.01, type=float, show_default=True)(f)
@@ -65,14 +74,6 @@ def common_options(f):
         default=True,
         flag_value=False,
         help="Skip Tn5 cut site tracking. Use for non-ATAC assays (RNA-seq, WGS).",
-    )(f)
-    f = click.option(
-        "--pileup-mode",
-        "pileup_mode",
-        type=click.Choice(["classic", "fast"], case_sensitive=False),
-        default="fast",
-        show_default=True,
-        help="Pileup engine: fast (vectorized numpy, default) or classic (reference).",
     )(f)
     f = click.option(
         "--format",
@@ -147,14 +148,6 @@ def common_options(f):
         type=float,
         show_default=True,
         help="Maximum memory usage in GB",
-    )(f)
-    f = click.option(
-        "--batch-size",
-        "batch_size",
-        default=None,
-        type=int,
-        show_default=True,
-        help="Worker batch size: cells per parallel processing batch (default: matches cores)",
     )(f)
     f = click.option(
         "--verbose",
@@ -236,14 +229,6 @@ def tenx_options(f):
         default=True,
         flag_value=False,
         help="Skip Tn5 cut site tracking. Use for non-ATAC assays.",
-    )(f)
-    f = click.option(
-        "--pileup-mode",
-        "pileup_mode",
-        type=click.Choice(["classic", "fast"], case_sensitive=False),
-        default="fast",
-        show_default=True,
-        help="Pileup engine: fast (vectorized numpy, default) or classic (reference).",
     )(f)
     f = click.option(
         "--format",
@@ -333,14 +318,6 @@ def tenx_options(f):
         type=float,
         help="Maximum memory usage in GB",
     )(f)
-    f = click.option(
-        "--batch-size",
-        "batch_size",
-        default=None,
-        type=int,
-        show_default=True,
-        help="Worker batch size: cells per parallel processing batch (default: matches cores)",
-    )(f)
     f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
     f = click.option(
         "--threads",
@@ -395,137 +372,6 @@ def tenx_options(f):
         default=".",
         type=click.Path(exists=True),
         help="Input BAM file or 10x outs/ directory",
-    )(f)
-
-
-def wes_options(f):
-    """Options for wes command (somatic mito calling from paired tumour/normal CRAMs)."""
-    f = click.option(
-        "--dry-run",
-        is_flag=True,
-        help="Show configuration and exit without processing",
-    )(f)
-    f = click.option(
-        "--sample-name",
-        "-n",
-        "sample_name",
-        default="sample",
-        show_default=True,
-        help="Sample name prefix for output files",
-    )(f)
-    f = click.option(
-        "--blacklist",
-        "blacklist_build",
-        default="none",
-        type=click.Choice(["hg38", "hg19", "mm10", "mm9", "none"], case_sensitive=False),
-        show_default=True,
-        help=(
-            "Bundled NuMT blacklist build to apply to chrM positions. "
-            "Note: bundled BEDs are nuclear-side NuMT positions and contain no chrM rows; "
-            "primary NuMT defence is --mapq 20. Use 'none' (default) or supply "
-            "--custom-blacklist for a chrM-side BED."
-        ),
-    )(f)
-    f = click.option(
-        "--custom-blacklist",
-        "custom_blacklist",
-        default=None,
-        type=click.Path(exists=True),
-        help="Path to a custom chrM-side blacklist BED (overrides --blacklist)",
-    )(f)
-    f = click.option(
-        "--min-tn-ratio",
-        "min_tn_ratio",
-        default=3.0,
-        type=float,
-        show_default=True,
-        help="Minimum tumour/normal VAF ratio to call somatic",
-    )(f)
-    f = click.option(
-        "--max-normal-af",
-        "max_normal_af",
-        default=0.01,
-        type=float,
-        show_default=True,
-        help="Maximum normal VAF before calling germline",
-    )(f)
-    f = click.option(
-        "--min-af",
-        "min_tumour_af",
-        default=0.005,
-        type=float,
-        show_default=True,
-        help="Minimum tumour variant allele fraction to report",
-    )(f)
-    f = click.option(
-        "--min-alt-reads",
-        "min_tumour_alt_reads",
-        default=3,
-        type=int,
-        show_default=True,
-        help="Minimum absolute alt read count in tumour",
-    )(f)
-    f = click.option(
-        "--min-normal-depth",
-        "min_normal_depth",
-        default=5,
-        type=int,
-        show_default=True,
-        help="Minimum read depth in normal at a called site",
-    )(f)
-    f = click.option(
-        "--min-depth",
-        "min_tumour_depth",
-        default=10,
-        type=int,
-        show_default=True,
-        help="Minimum read depth in tumour at a called site",
-    )(f)
-    f = _paired_quality_options(f)
-    f = click.option(
-        "--verbose",
-        "-v",
-        is_flag=True,
-        help="Enable verbose logging",
-    )(f)
-    f = click.option(
-        "--output",
-        "-o",
-        "output_dir",
-        default="mgatk2_wes/",
-        type=click.Path(),
-        show_default=True,
-        help="Output directory",
-    )(f)
-    f = click.option(
-        "--genome",
-        "-g",
-        "mito_genome",
-        default="chrM",
-        show_default=True,
-        help="Mitochondrial chromosome name in the CRAM (chrM / MT / M)",
-    )(f)
-    f = click.option(
-        "--reference",
-        "-r",
-        "reference",
-        type=click.Path(exists=True),
-        required=True,
-        help="Reference FASTA used to encode the CRAM files (required for decoding)",
-    )(f)
-    f = click.option(
-        "--normal",
-        "normal_cram",
-        type=click.Path(exists=True),
-        required=True,
-        help="Normal sample CRAM (e.g. CD14+ monocytes from CLONK-WES)",
-    )(f)
-    return click.option(
-        "--tumour",
-        "tumour_cram",
-        type=click.Path(exists=True),
-        required=True,
-        help="Tumour sample CRAM (e.g. NK cells from CLONK-WES)",
     )(f)
 
 
