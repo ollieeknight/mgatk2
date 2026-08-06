@@ -19,11 +19,13 @@ def _write_alignment(path: Path, reference: Path, reads: list[dict]) -> Path:
             read.reference_id = 0
             read.reference_start = specification["start"]
             read.mapping_quality = specification.get("mapq", 60)
-            read.cigar = ((0, len(read.query_sequence)),)
+            read.cigar = specification.get("cigar", ((0, len(read.query_sequence)),))
             qualities = specification.get("qualities", "D" * len(read.query_sequence))
             read.query_qualities = (
                 None if qualities is None else pysam.qualitystring_to_array(qualities)
             )
+            for tag, value in specification.get("tags", {}).items():
+                read.set_tag(tag, value)
             read.next_reference_id = specification.get("next_reference_id", -1)
             read.next_reference_start = specification.get("next_start", -1)
             read.template_length = specification.get("template_length", 0)
@@ -35,6 +37,24 @@ def _write_alignment(path: Path, reference: Path, reads: list[dict]) -> Path:
 @pytest.fixture
 def alignment_factory():
     return _write_alignment
+
+
+@pytest.fixture
+def barcoded_bam(tmp_path, alignment_factory):
+    """Two cells on a 40bp chrM. cell-1 has a duplicate pair; cell-2 is reverse."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    pysam.faidx(str(reference))
+
+    reads = [
+        {"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}},
+        # identical alignment to r1: dropped by deduplication
+        {"name": "r2", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}},
+        {"name": "r3", "start": 4, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}},
+        {"name": "r4", "start": 0, "sequence": "C" * 20, "flag": 16, "tags": {"CB": "cell-2"}},
+        {"name": "r5", "start": 0, "sequence": "G" * 20, "tags": {"CB": "not-a-cell"}},
+    ]
+    return alignment_factory(tmp_path / "cells.bam", reference, reads)
 
 
 @pytest.fixture
