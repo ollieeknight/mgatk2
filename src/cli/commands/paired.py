@@ -51,6 +51,7 @@ def paired(
     max_baseline_af,
     min_query_baseline_ratio,
     custom_blacklist,
+    autosomal_median_depth,
     circular_edge_bases,
     input_is_consensus,
     verbose,
@@ -77,6 +78,7 @@ def paired(
             max_baseline_af=max_baseline_af,
             min_query_baseline_ratio=min_query_baseline_ratio,
             custom_blacklist=custom_blacklist,
+            autosomal_median_depth=autosomal_median_depth,
             circular_edge_bases=circular_edge_bases,
             input_is_consensus=input_is_consensus,
         )
