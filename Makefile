@@ -1,4 +1,6 @@
-.PHONY: setup format lint test check build check-all fixture run tenx call integration benchmark benchmark-hdf5 clean
+.PHONY: env setup format lint test check build check-all fixtures run tenx call run-multi integration all benchmark benchmark-hdf5 clean
+
+env: setup
 
 setup:
 	python3 -m venv .venv
@@ -34,19 +36,28 @@ check-all: check build
 fixture:
 	.venv/bin/python tests/create_integration_fixture.py .test-work
 
-run: fixture
+fixtures:
+	.venv/bin/python tests/create_integration_fixture.py tests/fixtures/10x_atac
+
+run:
 	.venv/bin/mgatk2 run --help
-	.venv/bin/mgatk2 run -i .test-work/outs -o .test-work/run-hdf5 -f hdf5 -t 1
-	.venv/bin/mgatk2 run -i .test-work/outs -o .test-work/run-txt -f txt -t 1
+	.venv/bin/mgatk2 run -i tests/fixtures/10x_atac/outs -o .test-work/run-hdf5 -f hdf5 -t 1
+	.venv/bin/mgatk2 run -i tests/fixtures/10x_atac/outs -o .test-work/run-txt -f txt -t 1
 
-tenx: fixture
+tenx:
 	.venv/bin/mgatk2 tenx --help
-	.venv/bin/mgatk2 tenx -i .test-work/outs -o .test-work/tenx -t 1
+	.venv/bin/mgatk2 tenx -i tests/fixtures/10x_atac/outs -o .test-work/tenx -t 1
 
-call: fixture
-	.venv/bin/mgatk2 call -i .test-work/outs -o .test-work/call -t 1
+call:
+	.venv/bin/mgatk2 call --help
+	.venv/bin/mgatk2 call -i tests/fixtures/10x_atac/outs -o .test-work/call -t 1
 
-integration: run tenx call
+run-multi:
+	.venv/bin/mgatk2 run -i tests/fixtures/10x_multi/outs -o .test-work/run-multi -f hdf5 -t 1
+
+integration: run tenx call run-multi
+
+all: check-all integration
 
 benchmark: fixture
 	cd tests && ../.venv/bin/python benchmark.py

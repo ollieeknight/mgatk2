@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def auto_detect_10x_structure(
     bam_path: str, barcode_file: str | None = None
 ) -> tuple[str, str | None]:
-    """Auto-detect 10x Genomics output structure"""
+    """Auto-detect 10x Genomics output structure (scATAC or 10x Multi)"""
     path = Path(bam_path)
 
     if path.is_dir():
@@ -28,14 +28,39 @@ def auto_detect_10x_structure(
             if not barcode_file:
                 barcode_file = _find_barcode_file(bam_file.parent)
         else:
-            logger.warning(f"No possorted_bam.bam found in {path}")
+            multi_bam = _find_10x_multi_bam(path)
+            if multi_bam:
+                bam_path = str(multi_bam)
+                if not barcode_file:
+                    barcode_file = _find_barcode_file(multi_bam.parent)
+            else:
+                logger.warning(f"No possorted_bam.bam found in {path}")
 
     elif path.is_file() and not barcode_file:
         if path.parent.name == "outs":
             logger.info("Detected 10x BAM in outs directory")
             barcode_file = _find_barcode_file(path.parent)
+        elif path.parent.name == "count":
+            logger.info("Detected 10x Multi per-sample BAM")
+            barcode_file = _find_barcode_file(path.parent)
 
     return str(Path(bam_path).resolve()), barcode_file
+
+
+def _find_10x_multi_bam(root: Path) -> Path | None:
+    """Find a 10x Multi per-sample BAM under <root>/[outs/]per_sample_outs/*/count/."""
+    for per_sample_outs in [root / "per_sample_outs", root / "outs" / "per_sample_outs"]:
+        matches = sorted(per_sample_outs.glob("*/count/sample_alignments.bam"))
+        if len(matches) == 1:
+            logger.info(f"Detected 10x Multi sample: {matches[0].parent.parent.name}")
+            return matches[0]
+        if len(matches) > 1:
+            samples = ", ".join(m.parent.parent.name for m in matches)
+            raise InvalidInputError(
+                f"Multiple 10x Multi samples found under {per_sample_outs}: {samples}. "
+                "Pass --input pointing at the specific sample's sample_alignments.bam."
+            )
+    return None
 
 
 def _find_barcode_file(directory: Path) -> str | None:
@@ -45,6 +70,7 @@ def _find_barcode_file(directory: Path) -> str | None:
         return str(singlecell)
 
     for pattern in [
+        "sample_filtered_barcodes.csv",
         "filtered_peak_bc_matrix/barcodes.tsv",
         "filtered_tf_bc_matrix/barcodes.tsv.gz",
     ]:
@@ -391,6 +417,12 @@ def _log_configuration(
                 column_found = "is_cell_barcode"
             elif "is_cell" in headers:
                 column_found = "is_cell"
+            else:
+                # 10x Multi sample_filtered_barcodes.csv: headerless, every row is a barcode
+                with open(barcode_file) as count_f:
+                    n_barcodes = sum(1 for line in count_f if line.strip())
+                logger.info("  Barcodes:               %s", n_barcodes)
+                return
 
             for row in reader:
                 total_rows += 1

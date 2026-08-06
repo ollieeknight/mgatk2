@@ -69,6 +69,36 @@ def load_singlecell_csv(
         raise
 
 
+def load_barcode_csv(
+    csv_file: str,
+) -> tuple[list[str] | None, dict[str, list] | None]:
+    """Load barcodes from a .csv file, detecting ATAC vs 10x Multi schema."""
+    if csv_file is None:
+        return None, None
+
+    with open(csv_file) as f:
+        header = f.readline()
+
+    if not header.strip():
+        raise InvalidInputError(f"Barcode file is empty: {csv_file}")
+
+    fields = next(csv.reader([header]))
+    if any(col in fields for col in ("is__cell_barcode", "is_cell_barcode", "is_cell")):
+        return load_singlecell_csv(csv_file)
+
+    # 10x Multi sample_filtered_barcodes.csv: headerless "<reference>,<barcode>" rows
+    barcodes = []
+    with open(csv_file) as f:
+        for row in csv.reader(f):
+            if row:
+                barcodes.append(row[-1])
+
+    if not barcodes:
+        raise InvalidInputError(f"No barcodes found in {csv_file}")
+
+    return barcodes, None
+
+
 def validate_bam_file(bam_path: str) -> None:
     """Validate input BAM file exists and is properly formatted."""
     if not os.path.exists(bam_path):

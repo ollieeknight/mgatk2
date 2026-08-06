@@ -1,0 +1,55 @@
+Category,Library Type,Grouped By,Group Name,Metric Name,Metric Value
+Cells,Antibody Capture,,,Antibody reads in cells,45.59%
+Cells,Antibody Capture,,,Cells,"11,040"
+Cells,Antibody Capture,,,Fraction antibody reads,83.08%
+Cells,Antibody Capture,,,Fraction antibody reads in aggregate barcodes,0.08%
+Cells,Antibody Capture,,,Mean antibody reads usable per cell,"5,898"
+Cells,Antibody Capture,,,Median UMI counts per cell,584
+Cells,Antibody Capture,,,Number of reads from cells associated with this sample,"78,396,023"
+Cells,Gene Expression,,,Cells,"11,040"
+Cells,Gene Expression,,,Confidently mapped reads in cells,96.25%
+Cells,Gene Expression,,,Mean reads per cell,"77,440"
+Cells,Gene Expression,,,Median UMI counts per cell,"10,097"
+Cells,Gene Expression,,,Median genes per cell,"3,568"
+Cells,Gene Expression,,,Total genes detected,"29,939"
+Library,Antibody Capture,Fastq ID,test_sample_ADT,Number of reads,"88,282,980"
+Library,Antibody Capture,Fastq ID,test_sample_ADT,Number of short reads skipped,0
+Library,Antibody Capture,Fastq ID,test_sample_ADT,Q30 RNA read,63.2%
+Library,Antibody Capture,Fastq ID,test_sample_ADT,Q30 UMI,96.9%
+Library,Antibody Capture,Fastq ID,test_sample_ADT,Q30 barcodes,97.4%
+Library,Antibody Capture,Fastq ID,test_sample_HTO,Number of reads,"75,740,294"
+Library,Antibody Capture,Fastq ID,test_sample_HTO,Number of short reads skipped,0
+Library,Antibody Capture,Fastq ID,test_sample_HTO,Q30 RNA read,64.1%
+Library,Antibody Capture,Fastq ID,test_sample_HTO,Q30 UMI,97.0%
+Library,Antibody Capture,Fastq ID,test_sample_HTO,Q30 barcodes,97.4%
+Library,Antibody Capture,Physical library ID,ABC_1,Antibody reads in cells,45.59%
+Library,Antibody Capture,Physical library ID,ABC_1,Estimated number of cells,"11,040"
+Library,Antibody Capture,Physical library ID,ABC_1,Fraction antibody reads,87.68%
+Library,Antibody Capture,Physical library ID,ABC_1,Fraction antibody reads in aggregate barcodes,0.08%
+Library,Antibody Capture,Physical library ID,ABC_1,Fraction antibody reads usable,39.70%
+Library,Antibody Capture,Physical library ID,ABC_1,Mean reads per cell,"14,857"
+Library,Antibody Capture,Physical library ID,ABC_1,Number of reads,"164,023,274"
+Library,Antibody Capture,Physical library ID,ABC_1,Number of reads in the library,"164,023,274"
+Library,Antibody Capture,Physical library ID,ABC_1,Sequencing saturation,78.93%
+Library,Antibody Capture,Physical library ID,ABC_1,Valid UMIs,99.95%
+Library,Antibody Capture,Physical library ID,ABC_1,Valid barcodes,99.25%
+Library,Gene Expression,Fastq ID,test_sample_GEX,Number of reads,"911,111,850"
+Library,Gene Expression,Fastq ID,test_sample_GEX,Number of short reads skipped,0
+Library,Gene Expression,Fastq ID,test_sample_GEX,Q30 RNA read,94.0%
+Library,Gene Expression,Fastq ID,test_sample_GEX,Q30 UMI,96.8%
+Library,Gene Expression,Fastq ID,test_sample_GEX,Q30 barcodes,97.1%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped antisense,14.82%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped reads in cells,96.25%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped to exonic regions,81.36%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped to genome,93.93%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped to intergenic regions,4.81%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped to intronic regions,7.75%
+Library,Gene Expression,Physical library ID,GEX_1,Confidently mapped to transcriptome,74.14%
+Library,Gene Expression,Physical library ID,GEX_1,Estimated number of cells,"11,040"
+Library,Gene Expression,Physical library ID,GEX_1,Mapped to genome,96.89%
+Library,Gene Expression,Physical library ID,GEX_1,Mean reads per cell,"82,528"
+Library,Gene Expression,Physical library ID,GEX_1,Number of reads,"911,111,850"
+Library,Gene Expression,Physical library ID,GEX_1,Number of reads in the library,"911,111,850"
+Library,Gene Expression,Physical library ID,GEX_1,Sequencing saturation,80.71%
+Library,Gene Expression,Physical library ID,GEX_1,Valid UMIs,99.92%
+Library,Gene Expression,Physical library ID,GEX_1,Valid barcodes,97.92%

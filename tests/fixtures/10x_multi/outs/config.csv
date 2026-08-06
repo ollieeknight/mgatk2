@@ -1,0 +1,15 @@
+[gene-expression]
+reference,/data/test/hs/GRCh38-hardmasked-optimised-arc
+create-bam,true
+
+[vdj]
+reference,/data/test/hs/GRCh38-IMGT-VDJ-2024
+
+[feature]
+reference,/data/test/adt_files/CITE_NKG2C_ADT.csv
+
+[libraries]
+fastq_id,fastqs,feature_types
+test_sample_GEX,/data/test/HWNKNDRXX/test_sample_GEX,Gene Expression
+test_sample_ADT,/data/test/fastq_path/HWNKNDRXX,Antibody Capture
+test_sample_HTO,/data/test/fastq_path/HWNKNDRXX,Antibody Capture

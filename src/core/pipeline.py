@@ -226,9 +226,9 @@ def run_pipeline(
                 f"and minimum {min_barcode_reads} reads"
             )
     elif barcode_file.endswith(".csv"):
-        from utils.utils import load_singlecell_csv
+        from utils.utils import load_barcode_csv
 
-        barcodes, barcode_metadata = load_singlecell_csv(barcode_file)
+        barcodes, barcode_metadata = load_barcode_csv(barcode_file)
     else:
         with open(barcode_file) as f:
             barcodes = [line.strip() for line in f if line.strip()]

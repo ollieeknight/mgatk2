@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgatk2"
-version = "1.2.0"
+version = "1.2.1"
 description = "Mitochondrial genome analysis toolkit for single-cell data"
 readme = "README.md"
 authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]

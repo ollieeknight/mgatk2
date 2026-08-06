@@ -7,12 +7,13 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
-from cli.utils import setup_file_logging
+from cli.utils import auto_detect_10x_structure, setup_file_logging
 from core.config import PipelineConfig, SimpleRead
-from core.exceptions import NoBarcodeTagsError
+from core.exceptions import InvalidInputError, NoBarcodeTagsError
 from core.pipeline import run_pipeline
 from processing.processors import process_barcode_worker
 from processing.readers import BAMReader
+from utils.utils import load_barcode_csv
 
 
 @pytest.mark.parametrize("module", ["analysis", "cli", "core", "file_io", "processing", "utils"])
@@ -117,6 +118,59 @@ def test_call_uses_bulk_mode(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert calls[0]["barcode_file"] == "bulk"
+
+
+def test_auto_detect_finds_10x_multi_single_sample(tmp_path):
+    count_dir = tmp_path / "outs" / "per_sample_outs" / "sampleA" / "count"
+    count_dir.mkdir(parents=True)
+    (count_dir / "sample_alignments.bam").touch()
+    (count_dir / "sample_filtered_barcodes.csv").write_text("ref,AAAA-1\n")
+
+    bam_path, barcode_file = auto_detect_10x_structure(str(tmp_path))
+
+    assert bam_path.endswith("sample_alignments.bam")
+    assert barcode_file.endswith("sample_filtered_barcodes.csv")
+
+
+def test_auto_detect_rejects_multiple_10x_multi_samples(tmp_path):
+    for sample in ("sampleA", "sampleB"):
+        count_dir = tmp_path / "outs" / "per_sample_outs" / sample / "count"
+        count_dir.mkdir(parents=True)
+        (count_dir / "sample_alignments.bam").touch()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        auto_detect_10x_structure(str(tmp_path))
+
+    assert "sampleA" in str(excinfo.value)
+    assert "sampleB" in str(excinfo.value)
+
+
+def test_load_barcode_csv_reads_atac_singlecell_schema(tmp_path):
+    csv_file = tmp_path / "singlecell.csv"
+    csv_file.write_text("barcode,is__cell_barcode\nAAAA-1,1\nCCCC-1,0\n")
+
+    barcodes, metadata = load_barcode_csv(str(csv_file))
+
+    assert barcodes == ["AAAA-1"]
+    assert metadata is not None
+
+
+def test_load_barcode_csv_reads_10x_multi_schema(tmp_path):
+    csv_file = tmp_path / "sample_filtered_barcodes.csv"
+    csv_file.write_text("GRCh38,AAAA-1\nGRCh38,CCCC-1\n")
+
+    barcodes, metadata = load_barcode_csv(str(csv_file))
+
+    assert barcodes == ["AAAA-1", "CCCC-1"]
+    assert metadata is None
+
+
+def test_load_barcode_csv_rejects_empty_file(tmp_path):
+    csv_file = tmp_path / "empty.csv"
+    csv_file.write_text("")
+
+    with pytest.raises(InvalidInputError):
+        load_barcode_csv(str(csv_file))
 
 
 def test_run_returns_pipeline_failures(monkeypatch, tmp_path):

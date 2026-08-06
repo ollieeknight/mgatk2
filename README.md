@@ -56,6 +56,12 @@ mgatk2 run \
   --output results
 ```
 
+`--input` also accepts a CellRanger `outs/` directory, for either scATAC
+(`possorted_bam.bam`) or 10x Multi/CITE-seq (`per_sample_outs/<sample>/count/
+sample_alignments.bam`); the matching barcode file is auto-detected in both
+cases. If a Multi `outs/` contains more than one demultiplexed sample, point
+`--input` at that sample's `sample_alignments.bam` directly.
+
 If `--barcodes` is omitted, barcodes are extracted from the BAM tag selected by
 `--barcode-tag` (default `CB`). The three deduplication modes are:
 
