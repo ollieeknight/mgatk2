@@ -17,7 +17,6 @@ def tenx(
     output_dir,
     ncores,
     verbose,
-    batch_size,
     max_memory,
     base_qual,
     min_mapq,
@@ -29,12 +28,9 @@ def tenx(
     dry_run,
     nh_max,
     nm_max,
-    pileup_mode,
     compute_tn5,
 ):
     """Run mgatk2 with original mgatk package behaviour"""
-    sequential = ncores == 1
-
     status = run_pipeline_command(
         bam_path=bam_path,
         output_dir=output_dir,
@@ -44,7 +40,6 @@ def tenx(
         mito_genome=mito_genome,
         ncores=ncores,
         verbose=verbose,
-        batch_size=batch_size,
         max_memory=max_memory,
         base_qual=base_qual,
         min_mapq=min_mapq,
@@ -53,11 +48,9 @@ def tenx(
         min_distance_from_end=min_distance_from_end,
         dedup_mode=dedup_mode,
         output_format=output_format,
-        sequential=sequential,
         dry_run=dry_run,
         nh_max=nh_max,
         nm_max=nm_max,
-        pileup_mode=pileup_mode,
         compute_tn5=compute_tn5,
     )
     if status:
