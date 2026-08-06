@@ -1,6 +1,5 @@
 """Main pipeline orchestration for mtDNA genotyping."""
 
-import gc
 import logging
 import time
 from pathlib import Path
@@ -14,7 +13,7 @@ from core.config import (
 )
 from core.exceptions import InvalidInputError
 from file_io import IncrementalHDF5Writer, IncrementalTextWriter
-from processing.processors import CellProcessor
+from processing.processors import process_shards
 from processing.readers import BAMReader
 
 logger = logging.getLogger(__name__)
@@ -56,72 +55,57 @@ class MtDNAPipeline:
             logger.warning("BAM index not found, creating: %s", index_path)
             pysam.index(str(self.bam_path))
 
-        with pysam.AlignmentFile(str(self.bam_path), "rb") as bam:
-            if self.config.mito_chr not in bam.references:
-                for alt_name in ["chrM", "MT", "M", "chrMT"]:
-                    if alt_name in bam.references:
-                        logger.warning(f"Using '{alt_name}' instead of '{self.config.mito_chr}'")
-                        self.config.mito_chr = alt_name
-                        break
-                else:
-                    available = ", ".join(bam.references[:10])
-                    raise InvalidInputError(
-                        f"Mitochondrial chromosome '{self.config.mito_chr}' not found. "
-                        f"Available: {available}"
-                    )
-
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self) -> dict[str, Any]:
         start_time = time.time()
 
-        logger.info("Collecting reads from BAM by barcode...")
-        reader = BAMReader(str(self.bam_path), self.config, self.barcodes)
-        reads_by_barcode, stats = reader.collect_reads_by_barcode()
+        # Validates the chromosome name and barcode tag before any heavy work.
+        BAMReader(str(self.bam_path), self.config, self.barcodes)
 
-        if not reads_by_barcode:
-            logger.error("No reads found for any barcodes!")
-            return {}
-
-        n_cells_input = len(reads_by_barcode)
-
-        incremental_writer = None
+        n_cells_input = len(self.barcode_list)
         if self.output_format == "hdf5":
-            incremental_writer = IncrementalHDF5Writer(
+            writer = IncrementalHDF5Writer(
                 self.output_dir,
                 self.config,
                 self.barcode_list,
                 barcode_metadata=self.barcode_metadata,
             )
         else:
-            incremental_writer = IncrementalTextWriter(
-                self.output_dir, self.config, self.barcode_list
-            )
+            writer = IncrementalTextWriter(self.output_dir, self.config, self.barcode_list)
 
-        processor = CellProcessor(self.config, self.output_dir)
-        cell_results = processor.process_cells_progressive(reads_by_barcode, incremental_writer)
+        totals = process_shards(self.bam_path, self.config, self.barcode_list, writer)
 
-        if not cell_results:
+        cells_passed = totals["cells_passed"]
+        if not cells_passed:
             logger.error("No cells passed quality filters")
             return {}
 
-        logger.info("Cleaning up...")
-        qc_calc = QCCalculator(self.config)
+        if not self.config.dedup.skip and totals["total_reads"]:
+            logger.info(
+                "%s duplicate reads removed (%.1f%%)",
+                f"{totals['duplicate_reads']:,}",
+                totals["duplicate_reads"] / totals["total_reads"] * 100,
+            )
+        logger.info(
+            "Kept %s reads from %s cells at an average of %.0f reads/cell",
+            f"{totals['kept_reads']:,}",
+            f"{cells_passed:,}",
+            totals["kept_reads"] / cells_passed,
+        )
+
         qc_dir = self.output_dir / "qc"
+        writer.finalize(qc_dir)
 
-        incremental_writer.finalize(qc_dir)
-
-        run_metadata = qc_calc.collect_run_metadata(
+        run_metadata = QCCalculator(self.config).collect_run_metadata(
             str(self.bam_path),
             str(self.output_dir),
             n_cells_input,
-            len(cell_results),
+            cells_passed,
         )
         from file_io import write_run_summary
 
         write_run_summary(run_metadata, qc_dir / "summary.txt")
-
-        gc.collect()
 
         if self.output_format == "hdf5":
             logger.info("Generating HTML QC report...")
@@ -172,10 +156,8 @@ class MtDNAPipeline:
 
         return {
             "cells_processed": n_cells_input,
-            "cells_passed_qc": len(cell_results),
-            "mean_reads": (
-                sum(r["n_reads"] for r in cell_results) / len(cell_results) if cell_results else 0
-            ),
+            "cells_passed_qc": cells_passed,
+            "mean_reads": totals["kept_reads"] / cells_passed,
         }
 
 
@@ -193,17 +175,13 @@ def run_pipeline(
     use_fragment_length_dedup: bool = True,
     nh_max: int = 0,
     nm_max: int = 0,
-    pileup_mode: str = "classic",
     compute_tn5: bool = True,
     barcode_tag: str = "CB",
     min_barcode_reads: int = 1,
     mito_chr: str = "chrM",
     n_cores: int = 16,
-    worker_batch_size: int | None = None,
-    io_batch_size: int | None = None,
     max_memory_gb: float = 128.0,
     output_format: str = "standard",
-    sequential: bool = False,
     report_title: str | None = None,
     report_subtitle: str | None = None,
     working_directory: str | None = None,
@@ -233,13 +211,6 @@ def run_pipeline(
         with open(barcode_file) as f:
             barcodes = [line.strip() for line in f if line.strip()]
 
-    if worker_batch_size is None:
-        worker_batch_size = n_cores
-
-    if io_batch_size is None:
-        n_barcodes = len(barcodes)
-        io_batch_size = max(50, min(int(0.1 * n_barcodes), 1000))
-
     config = PipelineConfig(
         min_baseq=min_baseq,
         min_mapq=min_mapq,
@@ -249,13 +220,9 @@ def run_pipeline(
         use_fragment_length_dedup=use_fragment_length_dedup,
         nh_max=nh_max,
         nm_max=nm_max,
-        pileup_mode=pileup_mode,
         compute_tn5=compute_tn5,
         n_cores=n_cores,
-        worker_batch_size=worker_batch_size,
-        io_batch_size=io_batch_size,
         max_memory_gb=max_memory_gb,
-        sequential=sequential,
         min_reads_per_cell=min_reads_per_cell,
         barcode_tag=barcode_tag,
         mito_chr=mito_chr,
