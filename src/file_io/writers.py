@@ -148,7 +148,7 @@ class IncrementalHDF5Writer:
             self.metadata_file["mean_depth"][lo:hi] = result.mean_depth
             self.metadata_file["median_depth"][lo:hi] = result.median_depth
             self.metadata_file["max_depth"][lo:hi] = result.max_depth
-            self.metadata_file["genome_coverage"][lo:hi] = result.coverage_breadth * 100
+            self.metadata_file["genome_coverage"][lo:hi] = result.coverage_breadth
             self.metadata_file["total_bases"][lo:hi] = result.total_bases
 
         self._with_retry(write, "shard write")
