@@ -280,11 +280,11 @@ def create_depth_vs_coverage_plot(metadata_file):
 
     ax.scatter(mean_depth, genome_coverage, s=20, alpha=1, color="black", edgecolors="none")
 
-    ax.set_ylabel("Coverage breadth (%)", fontsize=10, color="black")
+    ax.set_ylabel("Coverage breadth", fontsize=10, color="black")
     ax.set_xlabel("Mean mtDNA depth", fontsize=10, color="black")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 1.05)
 
     return plot_to_base64(fig)
 
