@@ -1,4 +1,4 @@
-"""Evidence-first query/baseline mitochondrial SNV pipeline."""
+"""Evidence-first tumour/normal mitochondrial SNV pipeline."""
 
 from __future__ import annotations
 
@@ -129,16 +129,16 @@ def collect_sample_evidence(
 
 
 def estimate_error_rates(
-    baseline: QualityHistograms, reference: str, max_real_allele_fraction: float = 0.01
+    normal: QualityHistograms, reference: str, max_real_allele_fraction: float = 0.01
 ) -> dict[str, float]:
-    """Per-substitution sequencing error rate, learned from the baseline sample.
+    """Per-substitution sequencing error rate, learned from the normal sample.
 
-    A plain query-versus-baseline Fisher test assumes both samples share an
+    A plain tumour-versus-normal Fisher test assumes both samples share an
     error rate, so unequal depth alone can look significant. Estimating the
     rate for each REF>ALT substitution gives the caller an absolute noise floor
     to test against as well.
     """
-    per_allele = baseline.allele_counts()
+    per_allele = normal.allele_counts()
     depth = per_allele.sum(axis=1)
     reference_index = np.array([BASE_INDEX.get(base, -1) for base in reference], dtype=np.int64)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -167,49 +167,52 @@ def estimate_error_rates(
 def build_position_evidence(
     chromosome: str,
     reference: str,
-    query: QualityHistograms,
-    baseline: QualityHistograms,
+    tumor: QualityHistograms,
+    normal: QualityHistograms,
     config: PairedConfig,
     blacklist: set[int],
 ) -> list[dict]:
-    """Build the all-position public evidence table."""
+    """Build the all-position evidence table the caller consumes.
+
+    Not an output any more: the VCF is the only artefact, and this feeds
+    candidate construction and the callable-position count in QC.
+    """
     rows = []
     length = len(reference)
-    samples = (("QUERY", query), ("BASELINE", baseline))
+    samples = (("normal", normal), ("tumor", tumor))
     depths = {name: histograms.depth() for name, histograms in samples}
 
     for position, ref in enumerate(reference, start=1):
         index = position - 1
-        query_depth = int(depths["QUERY"][index])
-        baseline_depth = int(depths["BASELINE"][index])
-        query_callable = query_depth >= config.min_query_depth
-        baseline_callable = baseline_depth >= config.min_baseline_depth
+        tumor_depth = int(depths["tumor"][index])
+        normal_depth = int(depths["normal"][index])
         unresolved_edge = not config.shifted_reference_supplied and (
             position <= config.circular_edge_bases or position > length - config.circular_edge_bases
         )
         row = {
-            "CHROM": chromosome,
-            "POS": position,
-            "REF": ref,
-            "QUERY_DEPTH": query_depth,
-            "BASELINE_DEPTH": baseline_depth,
-            "QUERY_CLIPPED_OBSERVATIONS": int(query.clipped[index]),
-            "BASELINE_CLIPPED_OBSERVATIONS": int(baseline.clipped[index]),
-            "QUERY_OVERLAP_DISAGREEMENTS": int(query.overlap_disagreements[index]),
-            "BASELINE_OVERLAP_DISAGREEMENTS": int(baseline.overlap_disagreements[index]),
-            "QUERY_CALLABLE": query_callable,
-            "BASELINE_CALLABLE": baseline_callable,
-            "_JOINT_CALLABLE": (
-                query_callable
-                and baseline_callable
+            "chrom": chromosome,
+            "pos": position,
+            "ref": ref,
+            "normal_dp": normal_depth,
+            "tumor_dp": tumor_depth,
+            "normal_clipped": int(normal.clipped[index]),
+            "tumor_clipped": int(tumor.clipped[index]),
+            "normal_overlap_disagreements": int(normal.overlap_disagreements[index]),
+            "tumor_overlap_disagreements": int(tumor.overlap_disagreements[index]),
+            # Per-sample callability is reproducible from the depth columns and
+            # the recorded thresholds, so only the joint verdict is kept, and
+            # only to drive the callable BED.
+            "_joint_callable": (
+                tumor_depth >= config.min_tumor_depth
+                and normal_depth >= config.min_normal_depth
                 and position not in blacklist
                 and not unresolved_edge
             ),
         }
         for name, histograms in samples:
             for base, base_index in BASE_INDEX.items():
-                row[f"{name}_{base}_FWD"] = int(histograms.counts[index, base_index, 0])
-                row[f"{name}_{base}_REV"] = int(histograms.counts[index, base_index, 1])
+                row[f"{name}_{base.lower()}_fwd"] = int(histograms.counts[index, base_index, 0])
+                row[f"{name}_{base.lower()}_rev"] = int(histograms.counts[index, base_index, 1])
         rows.append(row)
     return rows
 
@@ -254,34 +257,32 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
     blacklist = load_blacklist_positions(
         build="none", custom_bed=config.custom_blacklist, mito_chr=chromosome
     )
-    query, query_stats = collect_sample_evidence(config.query, config, len(reference))
-    baseline, baseline_stats = collect_sample_evidence(config.baseline, config, len(reference))
-    evidence = build_position_evidence(chromosome, reference, query, baseline, config, blacklist)
-    error_rates = estimate_error_rates(baseline, reference)
-    candidates = construct_candidates(evidence, query, baseline, config, blacklist, error_rates)
-    callable_positions = sum(row["_JOINT_CALLABLE"] for row in evidence)
+    tumor, tumor_stats = collect_sample_evidence(config.tumor, config, len(reference))
+    normal, normal_stats = collect_sample_evidence(config.normal, config, len(reference))
+    evidence = build_position_evidence(chromosome, reference, tumor, normal, config, blacklist)
+    error_rates = estimate_error_rates(normal, reference)
+    candidates = construct_candidates(evidence, tumor, normal, config, blacklist, error_rates)
+    callable_positions = sum(row["_joint_callable"] for row in evidence)
     qc = {
-        "schema_version": config.qc_schema_version,
-        "evidence_schema_version": config.evidence_schema_version,
-        "candidate_schema_version": config.candidate_schema_version,
+        "schema_version": config.schema_version,
         "mgatk2_version": _package_version(),
         "git_commit": _git_commit(),
         "command_line": sys.argv,
         "parameters": asdict(config),
         "inputs": {
-            "query": {
-                "path": str(Path(config.query).resolve()),
-                "type": Path(config.query).suffix.lower().lstrip("."),
+            "normal": {
+                "path": str(Path(config.normal).resolve()),
+                "type": Path(config.normal).suffix.lower().lstrip("."),
                 "declared_upstream_consensus": config.input_is_consensus,
-                "statistics": query_stats,
-                **_depth_summary(query),
+                "statistics": normal_stats,
+                **_depth_summary(normal),
             },
-            "baseline": {
-                "path": str(Path(config.baseline).resolve()),
-                "type": Path(config.baseline).suffix.lower().lstrip("."),
+            "tumor": {
+                "path": str(Path(config.tumor).resolve()),
+                "type": Path(config.tumor).suffix.lower().lstrip("."),
                 "declared_upstream_consensus": config.input_is_consensus,
-                "statistics": baseline_stats,
-                **_depth_summary(baseline),
+                "statistics": tumor_stats,
+                **_depth_summary(tumor),
             },
         },
         "reference": {
@@ -312,7 +313,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             "evidence_positions": len(evidence),
             "callable_positions": callable_positions,
             "candidates": len(candidates),
-            "pass_candidates": sum(row["FILTER"] == "PASS" for row in candidates),
+            "pass_candidates": sum(row["filter"] == "PASS" for row in candidates),
         },
         "substitution_error_rates": error_rates,
         "numt_strategy": (

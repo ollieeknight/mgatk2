@@ -4,7 +4,7 @@ import click
 
 
 def _paired_quality_options(f):
-    """Shared paired/WES evidence and migration-threshold options."""
+    """Shared paired evidence and threshold options."""
     options = [
         click.option("--max-strand-bias", "-s", default=0.9, type=float, show_default=True),
         click.option("--min-distance-from-end", "-e", default=5, type=int, show_default=True),
@@ -17,7 +17,7 @@ def _paired_quality_options(f):
 
 
 def paired_options(f):
-    """Options for generic paired mitochondrial evidence analysis."""
+    """Options for paired tumour/normal mitochondrial evidence analysis."""
     f = click.option("--dry-run", is_flag=True, help="Validate and show configuration only")(f)
     f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
     f = click.option(
@@ -31,17 +31,16 @@ def paired_options(f):
         default=None,
         type=float,
         help=(
-            "Median autosomal depth of the query. Enables the POSSIBLE_NUMT filter, "
+            "Median autosomal depth of the tumour. Enables the POSSIBLE_NUMT filter, "
             "which flags alternate support a single-copy NuMT could account for."
         ),
     )(f)
     f = click.option("--custom-blacklist", type=click.Path(exists=True, dir_okay=False))(f)
-    f = click.option("--min-query-baseline-ratio", default=3.0, type=float, show_default=True)(f)
-    f = click.option("--max-baseline-af", default=0.01, type=float, show_default=True)(f)
-    f = click.option("--min-query-af", default=0.005, type=float, show_default=True)(f)
+    f = click.option("--max-normal-af", default=0.01, type=float, show_default=True)(f)
+    f = click.option("--min-tumor-af", default=0.005, type=float, show_default=True)(f)
     f = click.option("--min-alt-observations", default=3, type=int, show_default=True)(f)
-    f = click.option("--min-baseline-depth", default=5, type=int, show_default=True)(f)
-    f = click.option("--min-query-depth", default=10, type=int, show_default=True)(f)
+    f = click.option("--min-normal-depth", default=5, type=int, show_default=True)(f)
+    f = click.option("--min-tumor-depth", default=10, type=int, show_default=True)(f)
     f = click.option(
         "--deduplication",
         type=click.Choice(
@@ -56,8 +55,8 @@ def paired_options(f):
     f = click.option("--sample-name", required=True)(f)
     f = click.option("--output", "output_dir", required=True, type=click.Path())(f)
     f = click.option("--reference", required=True, type=click.Path(exists=True, dir_okay=False))(f)
-    f = click.option("--baseline", required=True, type=click.Path(exists=True, dir_okay=False))(f)
-    return click.option("--query", required=True, type=click.Path(exists=True, dir_okay=False))(f)
+    f = click.option("--normal", required=True, type=click.Path(exists=True, dir_okay=False))(f)
+    return click.option("--tumor", required=True, type=click.Path(exists=True, dir_okay=False))(f)
 
 
 def common_options(f):
@@ -484,5 +483,5 @@ def call_options(f):
         "bam_path",
         type=click.Path(exists=True),
         required=True,
-        help="Directory containing one bulk BAM per sample",
+        help="Directory containing one BAM file per cell, each treated as an independent bulk sample",
     )(f)

@@ -14,46 +14,44 @@ from core.exceptions import InvalidInputError
 from processing.paired_pileup import _git_commit, run_paired_pipeline
 
 
-def _config(paired_files, output, query="query_bam", baseline="baseline_bam", **kwargs):
+def _config(paired_files, output, tumor="tumor_bam", normal="normal_bam", **kwargs):
     values = {
-        "query": str(paired_files[query]),
-        "baseline": str(paired_files[baseline]),
+        "tumor": str(paired_files[tumor]),
+        "normal": str(paired_files[normal]),
         "reference": str(paired_files["reference"]),
         "output": str(output),
         "sample_name": "pair",
         "min_distance_from_end": 0,
-        "min_query_depth": 1,
-        "min_baseline_depth": 1,
+        "min_tumor_depth": 1,
+        "min_normal_depth": 1,
         "circular_edge_bases": 2,
     }
     values.update(kwargs)
     return PairedConfig(**values)
 
 
-def _evidence(query_alt, query_depth, baseline_alt, baseline_depth):
+def _evidence(tumor_alt, tumor_depth, normal_alt, normal_depth):
     row = {
-        "CHROM": "chrM",
-        "POS": 1,
-        "REF": "A",
-        "QUERY_DEPTH": query_depth,
-        "BASELINE_DEPTH": baseline_depth,
+        "chrom": "chrM",
+        "pos": 1,
+        "ref": "A",
+        "tumor_dp": tumor_depth,
+        "normal_dp": normal_depth,
     }
-    for sample in ("QUERY", "BASELINE"):
-        for base in "ACGT":
-            for strand in ("FWD", "REV"):
+    for sample in ("tumor", "normal"):
+        for base in "acgt":
+            for strand in ("fwd", "rev"):
                 row[f"{sample}_{base}_{strand}"] = 0
-            for orientation in ("F1R2", "F2R1"):
-                row[f"{sample}_{base}_{orientation}"] = 0
-    row["QUERY_C_FWD"] = query_alt
-    row["QUERY_A_FWD"] = query_depth - query_alt
-    row["BASELINE_C_FWD"] = baseline_alt
-    row["BASELINE_A_FWD"] = baseline_depth - baseline_alt
+    row["tumor_c_fwd"] = tumor_alt
+    row["tumor_a_fwd"] = tumor_depth - tumor_alt
+    row["normal_c_fwd"] = normal_alt
+    row["normal_a_fwd"] = normal_depth - normal_alt
     return row
 
 
 def _candidates(rows, config, blacklist=frozenset(), error_rates=None):
     """Call construct_candidates with empty histograms; counts come from rows."""
-    length = max(row["POS"] for row in rows)
+    length = max(row["pos"] for row in rows)
     return construct_candidates(
         rows,
         QualityHistograms(length),
@@ -64,13 +62,22 @@ def _candidates(rows, config, blacklist=frozenset(), error_rates=None):
     )
 
 
+def _qc(vcf_path):
+    """Read the QC record back out of the VCF header, the only place it lives."""
+    with pysam.VariantFile(vcf_path) as vcf:
+        for record in vcf.header.records:
+            if record.key == "mgatk2_qc":
+                return json.loads(record.value)
+    raise AssertionError("no mgatk2_qc header record")
+
+
 def _paired_args(paired_files, output):
     return [
         "paired",
-        "--query",
-        str(paired_files["query_bam"]),
-        "--baseline",
-        str(paired_files["baseline_bam"]),
+        "--tumor",
+        str(paired_files["tumor_bam"]),
+        "--normal",
+        str(paired_files["normal_bam"]),
         "--reference",
         str(paired_files["reference"]),
         "--output",
@@ -89,34 +96,34 @@ def test_candidate_counts_and_uncertainty(paired_files, tmp_path):
     shallow = _candidates([_evidence(3, 10, 0, 5)], config)[0]
     deep = _candidates([_evidence(3, 10, 0, 500)], config)[0]
 
-    assert shallow["ENRICHMENT_P"] > deep["ENRICHMENT_P"]
-    assert shallow["BASELINE_AF_CI_HIGH"] > deep["BASELINE_AF_CI_HIGH"]
+    assert shallow["enrich_p"] > deep["enrich_p"]
+    assert shallow["normal_af_ci_high"] > deep["normal_af_ci_high"]
 
     row = _evidence(3, 10, 0, 10)
-    row["QUERY_G_FWD"] = 2
-    row["QUERY_A_FWD"] = 5
+    row["tumor_g_fwd"] = 2
+    row["tumor_a_fwd"] = 5
 
     candidate = _candidates([row], config)[0]
 
-    assert candidate["QUERY_REF_COUNT"] == 5
-    assert candidate["QUERY_REF_COUNT"] != candidate["QUERY_DEPTH"] - candidate["QUERY_ALT_COUNT"]
+    assert candidate["tumor_ref_count"] == 5
+    assert candidate["tumor_ref_count"] != candidate["tumor_dp"] - candidate["tumor_ac"]
 
 
 def test_filters_have_a_stable_order(paired_files, tmp_path):
     config = _config(
         paired_files,
         tmp_path,
-        min_query_depth=10,
-        min_baseline_depth=5,
+        min_tumor_depth=10,
+        min_normal_depth=5,
         circular_edge_bases=0,
     )
     row = _candidates([_evidence(1, 2, 1, 2)], config, blacklist={1})[0]
 
-    assert row["FILTER"].split(";") == [
-        "LOW_QUERY_DEPTH",
-        "LOW_BASELINE_DEPTH",
+    assert row["filter"].split(";") == [
+        "LOW_TUMOR_DEPTH",
+        "LOW_NORMAL_DEPTH",
         "LOW_ALT_OBSERVATIONS",
-        "HIGH_BASELINE_AF",
+        "HIGH_NORMAL_AF",
         "BLACKLIST",
         "STRAND_BIAS",
         "NOT_SIGNIFICANT",
@@ -124,16 +131,16 @@ def test_filters_have_a_stable_order(paired_files, tmp_path):
 
 
 def test_sequencing_error_rate_gates_weak_alternate_support(paired_files, tmp_path):
-    config = _config(paired_files, tmp_path, min_query_af=0.0, min_alt_observations=1)
+    config = _config(paired_files, tmp_path, min_tumor_af=0.0, min_alt_observations=1)
     # 5 alt reads in 1000 is 0.5%: noise at a 1% error rate, signal at 1e-6.
     row = _evidence(5, 1000, 0, 1000)
 
     noisy = _candidates([row], config, error_rates={"A>C": 0.01})[0]
     clean = _candidates([row], config, error_rates={"A>C": 1e-6})[0]
 
-    assert noisy["SEQUENCING_ERROR_P"] > clean["SEQUENCING_ERROR_P"]
-    assert "WEAK_EVIDENCE" in noisy["FILTER"]
-    assert "WEAK_EVIDENCE" not in clean["FILTER"]
+    assert noisy["seq_p"] > clean["seq_p"]
+    assert "WEAK_EVIDENCE" in noisy["filter"]
+    assert "WEAK_EVIDENCE" not in clean["filter"]
 
 
 def test_numt_filter_needs_autosomal_depth(paired_files, tmp_path):
@@ -144,8 +151,8 @@ def test_numt_filter_needs_autosomal_depth(paired_files, tmp_path):
         [row], _config(paired_files, tmp_path / "numt", autosomal_median_depth=30.0)
     )[0]
 
-    assert "POSSIBLE_NUMT" not in without["FILTER"]
-    assert "POSSIBLE_NUMT" in with_depth["FILTER"]
+    assert "POSSIBLE_NUMT" not in without["filter"]
+    assert "POSSIBLE_NUMT" in with_depth["filter"]
 
 
 def test_histogram_median_and_rank_sum_separate_distributions():
@@ -168,12 +175,12 @@ def test_paired_dry_run(paired_files, tmp_path):
 
     assert result.exit_code == 0
     assert "dry run complete" in result.output
-    assert not (tmp_path / "pair.mt_qc.json").exists()
+    assert not (tmp_path / "pair.mt_variants.vcf.gz").exists()
 
 
 def test_paired_rejects_the_same_input_twice(paired_files, tmp_path):
     arguments = _paired_args(paired_files, tmp_path)
-    arguments[4] = str(paired_files["query_bam"])
+    arguments[4] = str(paired_files["tumor_bam"])
 
     result = CliRunner().invoke(cli, [*arguments, "--dry-run"])
 
@@ -191,7 +198,7 @@ def test_fasta_sets_ref_and_all_positions_are_written(paired_files, tmp_path):
 def test_bam_and_cram_give_the_same_counts(paired_files, tmp_path):
     bam = run_paired_pipeline(_config(paired_files, tmp_path / "bam"))
     cram = run_paired_pipeline(
-        _config(paired_files, tmp_path / "cram", query="query_cram", baseline="baseline_cram")
+        _config(paired_files, tmp_path / "cram", tumor="tumor_cram", normal="normal_cram")
     )
 
     assert (bam.evidence_positions, bam.candidates, bam.callable_positions) == (
@@ -199,9 +206,9 @@ def test_bam_and_cram_give_the_same_counts(paired_files, tmp_path):
         cram.candidates,
         cram.callable_positions,
     )
-    with gzip.open(bam.outputs["evidence"], "rt") as bam_evidence:
-        with gzip.open(cram.outputs["evidence"], "rt") as cram_evidence:
-            assert bam_evidence.read() == cram_evidence.read()
+    with pysam.VariantFile(bam.outputs["vcf"]) as bam_vcf:
+        with pysam.VariantFile(cram.outputs["vcf"]) as cram_vcf:
+            assert [str(record) for record in bam_vcf] == [str(record) for record in cram_vcf]
 
 
 def test_reference_length_must_match_the_alignment(paired_files, tmp_path):
@@ -216,7 +223,7 @@ def test_reference_length_must_match_the_alignment(paired_files, tmp_path):
 
 
 def test_excluded_reads_are_reported(paired_files, alignment_factory, tmp_path):
-    query = alignment_factory(
+    tumor = alignment_factory(
         tmp_path / "filtered.bam",
         paired_files["reference"],
         [
@@ -230,12 +237,10 @@ def test_excluded_reads_are_reported(paired_files, alignment_factory, tmp_path):
         ],
     )
     config = _config(paired_files, tmp_path / "policy")
-    config.query = str(query)
+    config.tumor = str(tumor)
 
-    run_paired_pipeline(config)
-    stats = json.loads((tmp_path / "policy/pair.mt_qc.json").read_text())["inputs"]["query"][
-        "statistics"
-    ]
+    result = run_paired_pipeline(config)
+    stats = _qc(result.outputs["vcf"])["inputs"]["tumor"]["statistics"]
 
     assert stats["preexisting_duplicate_reads"] == 1
     assert stats["qc_failed_reads"] == 1
@@ -247,11 +252,11 @@ def test_excluded_reads_are_reported(paired_files, alignment_factory, tmp_path):
 
 
 def test_identical_inputs_have_no_pass_candidates(paired_files, alignment_factory, tmp_path):
-    baseline = alignment_factory(
-        tmp_path / "query-copy.bam",
+    normal = alignment_factory(
+        tmp_path / "tumor-copy.bam",
         paired_files["reference"],
         [
-            {"name": f"query{index}", "start": start, "sequence": sequence}
+            {"name": f"tumor{index}", "start": start, "sequence": sequence}
             for index, (start, sequence) in enumerate(
                 (
                     (3, "AAAAAAACAAAAAAA"),
@@ -262,7 +267,7 @@ def test_identical_inputs_have_no_pass_candidates(paired_files, alignment_factor
         ],
     )
     config = _config(paired_files, tmp_path / "negative")
-    config.baseline = str(baseline)
+    config.normal = str(normal)
 
     assert run_paired_pipeline(config).pass_candidates == 0
 
@@ -277,28 +282,52 @@ def test_provenance_tolerates_missing_git(monkeypatch):
 
 
 def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
-    config = _config(paired_files, tmp_path)
+    output = tmp_path / "out"
+    config = _config(paired_files, output)
     result = run_paired_pipeline(config)
 
-    assert set(result.outputs) == {
-        "evidence",
-        "candidates",
-        "vcf",
-        "vcf_index",
-        "callable_bed",
-        "qc",
-        "log",
-    }
-    with gzip.open(result.outputs["evidence"], "rt") as evidence:
-        assert sum(1 for _line in evidence) == 41
+    assert set(result.outputs) == {"vcf", "vcf_index", "callable_bed"}
+    assert sorted(path.name for path in output.iterdir()) == [
+        "pair.mt_callable.bed.gz",
+        "pair.mt_variants.vcf.gz",
+        "pair.mt_variants.vcf.gz.tbi",
+    ]
     with pysam.VariantFile(result.outputs["vcf"]) as vcf:
         assert list(vcf)
 
-    qc = json.loads((tmp_path / "pair.mt_qc.json").read_text())
-    assert qc["schema_version"] == "2.0"
+    qc = _qc(result.outputs["vcf"])
+    assert qc["schema_version"] == "3.0"
     assert qc["reference"]["sha256"]
     assert qc["snv_only"] is True
+    assert qc["counts"]["evidence_positions"] == 40
+    assert qc["counts"]["callable_positions"] == result.callable_positions
+    with gzip.open(result.outputs["callable_bed"], "rt") as bed:
+        intervals = [line.split() for line in bed]
+    assert len(intervals) == result.callable_positions
+    assert all(start == str(int(end) - 1) for _chrom, start, end in intervals)
 
     rerun = run_paired_pipeline(config)
-    assert (tmp_path / "pair.paired.log").read_text().count("mgatk2 paired:") == 1
     assert rerun.outputs == result.outputs
+
+
+def test_rank_sum_filters_fire_only_on_degraded_alternates(paired_files, tmp_path):
+    """A low-quality alternate is flagged; a high-quality one is not."""
+    config = _config(paired_files, tmp_path, min_tumor_af=0.0, min_alt_observations=1)
+    row = _evidence(20, 100, 0, 100)
+
+    def _candidate(alternate_bin):
+        tumor = QualityHistograms(1)
+        for source in (tumor.baseq, tumor.mapq, tumor.distance):
+            source[0, 0, 30] = 80  # reference allele A
+            source[0, 1, alternate_bin] = 20  # alternate allele C
+        return construct_candidates(
+            [row], tumor, QualityHistograms(1), config, set(), {"A>C": 1e-6}
+        )[0]
+
+    degraded = _candidate(5)
+    healthy = _candidate(50)
+
+    assert degraded["rsbq"] < 0
+    for flag in ("BASE_QUAL", "MAP_QUAL", "POSITION"):
+        assert flag in degraded["filter"]
+        assert flag not in healthy["filter"]

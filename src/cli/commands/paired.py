@@ -1,4 +1,4 @@
-"""Generic paired mitochondrial evidence command."""
+"""Paired tumour/normal mitochondrial evidence command."""
 
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ def execute_paired(config: PairedConfig, verbose: bool = False) -> PairedResult:
         raise click.ClickException(str(exc)) from exc
 
 
-@click.command(short_help="Paired query/baseline mitochondrial SNV evidence")
+@click.command(short_help="Paired tumour/normal mitochondrial SNV evidence")
 @paired_options
 def paired(
-    query,
-    baseline,
+    tumor,
+    normal,
     reference,
     output_dir,
     sample_name,
@@ -44,12 +44,11 @@ def paired(
     min_distance_from_end,
     max_strand_bias,
     deduplication,
-    min_query_depth,
-    min_baseline_depth,
+    min_tumor_depth,
+    min_normal_depth,
     min_alt_observations,
-    min_query_af,
-    max_baseline_af,
-    min_query_baseline_ratio,
+    min_tumor_af,
+    max_normal_af,
     custom_blacklist,
     autosomal_median_depth,
     circular_edge_bases,
@@ -57,11 +56,11 @@ def paired(
     verbose,
     dry_run,
 ):
-    """Compare mitochondrial evidence in a QUERY population to an autologous BASELINE."""
+    """Compare mitochondrial evidence in a TUMOR sample to an autologous NORMAL."""
     try:
         config = PairedConfig(
-            query=query,
-            baseline=baseline,
+            tumor=tumor,
+            normal=normal,
             reference=reference,
             output=output_dir,
             sample_name=sample_name,
@@ -71,12 +70,11 @@ def paired(
             min_distance_from_end=min_distance_from_end,
             max_strand_bias=max_strand_bias,
             deduplication=deduplication,
-            min_query_depth=min_query_depth,
-            min_baseline_depth=min_baseline_depth,
+            min_tumor_depth=min_tumor_depth,
+            min_normal_depth=min_normal_depth,
             min_alt_observations=min_alt_observations,
-            min_query_af=min_query_af,
-            max_baseline_af=max_baseline_af,
-            min_query_baseline_ratio=min_query_baseline_ratio,
+            min_tumor_af=min_tumor_af,
+            max_normal_af=max_normal_af,
             custom_blacklist=custom_blacklist,
             autosomal_median_depth=autosomal_median_depth,
             circular_edge_bases=circular_edge_bases,

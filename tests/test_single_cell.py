@@ -59,7 +59,7 @@ def test_bulk_mode_skips_barcode_discovery(monkeypatch, tmp_path):
 def test_barcode_less_bam_is_rejected(paired_files):
     with pytest.raises(NoBarcodeTagsError):
         BAMReader(
-            str(paired_files["query_bam"]),
+            str(paired_files["tumor_bam"]),
             PipelineConfig(mito_length=40),
             {"cell-1"},
         )
@@ -218,6 +218,21 @@ def test_call_uses_bulk_mode(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert calls[0]["barcode_file"] == "bulk"
+
+
+def test_call_rejects_single_bam_file(caplog, tmp_path):
+    command_module = importlib.import_module("cli.commands.call")
+    bam = tmp_path / "one.bam"
+    bam.touch()
+
+    with caplog.at_level(logging.INFO):
+        result = CliRunner().invoke(
+            command_module.call,
+            ["--input", str(bam), "--output", str(tmp_path / "output")],
+        )
+
+    assert result.exit_code == 1
+    assert "mgatk2 run" in caplog.text
 
 
 def test_auto_detect_finds_10x_multi_single_sample(tmp_path):

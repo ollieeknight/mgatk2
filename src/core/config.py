@@ -83,10 +83,10 @@ class SimpleRead:
 
 @dataclass
 class PairedConfig:
-    """Configuration for query/baseline mitochondrial evidence analysis."""
+    """Configuration for tumour/normal mitochondrial evidence analysis."""
 
-    query: str
-    baseline: str
+    tumor: str
+    normal: str
     reference: str
     output: str
     sample_name: str
@@ -95,47 +95,42 @@ class PairedConfig:
     min_distance_from_end: int = 5
     mito_chr: str = "chrM"
     deduplication: str = "alignment_and_fragment_length"
-    min_query_depth: int = 10
-    min_baseline_depth: int = 5
+    min_tumor_depth: int = 10
+    min_normal_depth: int = 5
     min_alt_observations: int = 3
-    min_query_af: float = 0.005
-    max_baseline_af: float = 0.01
-    min_query_baseline_ratio: float = 3.0
+    min_tumor_af: float = 0.005
+    max_normal_af: float = 0.01
     max_strand_bias: float = 0.9
     custom_blacklist: str | None = None
     autosomal_median_depth: float | None = None
     input_is_consensus: bool = False
     shifted_reference_supplied: bool = False
     circular_edge_bases: int = 500
-    evidence_schema_version: str = "2.0"
-    candidate_schema_version: str = "2.0"
-    qc_schema_version: str = "2.0"
+    schema_version: str = "3.0"
 
     def __post_init__(self) -> None:
         for name in (
             "min_baseq",
             "min_mapq",
             "min_distance_from_end",
-            "min_query_depth",
-            "min_baseline_depth",
+            "min_tumor_depth",
+            "min_normal_depth",
             "min_alt_observations",
             "circular_edge_bases",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
-        for name in ("min_query_af", "max_baseline_af", "max_strand_bias"):
+        for name in ("min_tumor_af", "max_normal_af", "max_strand_bias"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
-        if self.min_query_baseline_ratio <= 0:
-            raise ValueError("min_query_baseline_ratio must be positive")
         if self.deduplication not in {
             "alignment_and_fragment_length",
             "alignment_start",
             "none",
         }:
             raise ValueError(f"Unsupported deduplication mode: {self.deduplication}")
-        if Path(self.query).resolve() == Path(self.baseline).resolve():
-            raise ValueError("query and baseline must be different files")
+        if Path(self.tumor).resolve() == Path(self.normal).resolve():
+            raise ValueError("tumor and normal must be different files")
         if not self.sample_name or any(c in self.sample_name for c in "/\\"):
             raise ValueError("sample_name must be a non-empty filename prefix")
         if self.input_is_consensus and self.deduplication != "none":

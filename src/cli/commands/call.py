@@ -38,6 +38,16 @@ def call(
 
     try:
         input_path = Path(bam_path)
+
+        if input_path.is_file():
+            logger.error(
+                f"'call' expects a directory of one-BAM-per-cell files, not a single BAM: {bam_path}"
+            )
+            logger.info(
+                "Try: mgatk2 run -i <bam> for a single multi-cell BAM (e.g. Tapestri/10x .cells.bam)"
+            )
+            raise SystemExit(1)
+
         bam_files = sorted(input_path.glob("*.bam"))
 
         if not bam_files:

@@ -1,8 +1,8 @@
-"""Pure query/baseline SNV candidate construction and classification."""
+"""Pure tumor/normal SNV candidate construction and classification."""
 
 from __future__ import annotations
 
-from math import isfinite
+from math import isfinite, log10
 
 from scipy.stats import beta, binom, fisher_exact
 
@@ -19,14 +19,21 @@ from core.config import PairedConfig
 # having seen no errors at all, and the binomial test stops being meaningful.
 MIN_ERROR_RATE = 1e-6
 
-# Shared by the strand and orientation tests; deliberately strict, because both
-# are run at every observed allele across the genome.
+# Shared by every per-allele artefact test; deliberately strict, because all of
+# them are run at every observed allele across the genome.
 ARTEFACT_P = 0.001
 
 
 def _fisher_p(table: list[list[int]], alternative: str = "two-sided") -> float:
     value = float(fisher_exact(table, alternative=alternative).pvalue)
     return value if isfinite(value) else 1.0
+
+
+def phred(probability: float) -> float:
+    """Convert an adjusted p-value into a capped phred-scaled quality."""
+    if probability <= 0:
+        return 1000.0
+    return min(1000.0, max(0.0, -10 * log10(probability)))
 
 
 def binomial_ci(successes: int, total: int, alpha: float = 0.05) -> tuple[float, float]:
@@ -62,11 +69,11 @@ def _allele_quality(
 ) -> dict[str, float]:
     """Median base quality, mapping quality, and distance from read end."""
     if allele is None:
-        return {"MBQ": 0.0, "MMQ": 0.0, "MPOS": 0.0}
+        return {"mbq": 0.0, "mmq": 0.0, "mpos": 0.0}
     return {
-        "MBQ": histogram_median(histograms.baseq[index, allele]),
-        "MMQ": histogram_median(histograms.mapq[index, allele]),
-        "MPOS": histogram_median(histograms.distance[index, allele], DISTANCE_SCALE),
+        "mbq": histogram_median(histograms.baseq[index, allele]),
+        "mmq": histogram_median(histograms.mapq[index, allele]),
+        "mpos": histogram_median(histograms.distance[index, allele], DISTANCE_SCALE),
     }
 
 
@@ -75,20 +82,23 @@ def _rank_sums(
 ) -> dict[str, float]:
     """Alternate-versus-reference rank-sum z-scores and p-values."""
     if reference is None:
-        return dict.fromkeys(("RSBQ", "RSBQ_P", "RSMQ", "RSMQ_P", "RSPOS", "RSPOS_P"), 0.0) | {
-            "RSBQ_P": 1.0,
-            "RSMQ_P": 1.0,
-            "RSPOS_P": 1.0,
+        return {
+            "rsbq": 0.0,
+            "rsbq_p": 1.0,
+            "rsmq": 0.0,
+            "rsmq_p": 1.0,
+            "rspos": 0.0,
+            "rspos_p": 1.0,
         }
     results = {}
     for name, source in (
-        ("RSBQ", histograms.baseq),
-        ("RSMQ", histograms.mapq),
-        ("RSPOS", histograms.distance),
+        ("rsbq", histograms.baseq),
+        ("rsmq", histograms.mapq),
+        ("rspos", histograms.distance),
     ):
         z_score, p_value = rank_sum(source[index, alternate], source[index, reference])
         results[name] = z_score
-        results[f"{name}_P"] = p_value
+        results[f"{name}_p"] = p_value
     return results
 
 
@@ -97,10 +107,19 @@ def _strand_bias(forward: int, reverse: int) -> float:
     return abs(forward - reverse) / total if total else 0.0
 
 
+def _orientation(histograms: QualityHistograms, index: int, allele: int | None) -> tuple[int, int]:
+    if allele is None:
+        return 0, 0
+    return (
+        int(histograms.orientation[index, allele, 0]),
+        int(histograms.orientation[index, allele, 1]),
+    )
+
+
 def construct_candidates(
     evidence_rows: list[dict],
-    query: QualityHistograms,
-    baseline: QualityHistograms,
+    tumor: QualityHistograms,
+    normal: QualityHistograms,
     config: PairedConfig,
     blacklist: set[int],
     error_rates: dict[str, float],
@@ -111,190 +130,166 @@ def construct_candidates(
     length = len(evidence_rows)
 
     for evidence in evidence_rows:
-        index = evidence["POS"] - 1
-        ref = evidence["REF"]
+        index = evidence["pos"] - 1
+        ref = evidence["ref"]
         reference_allele = BASE_INDEX.get(ref)
 
         for alt, alternate_allele in BASE_INDEX.items():
             if alt == ref:
                 continue
-            query_alt_fwd = evidence[f"QUERY_{alt}_FWD"]
-            query_alt_rev = evidence[f"QUERY_{alt}_REV"]
-            baseline_alt_fwd = evidence[f"BASELINE_{alt}_FWD"]
-            baseline_alt_rev = evidence[f"BASELINE_{alt}_REV"]
-            query_alt = query_alt_fwd + query_alt_rev
-            baseline_alt = baseline_alt_fwd + baseline_alt_rev
-            if query_alt == baseline_alt == 0:
+            tumor_alt_fwd = evidence[f"tumor_{alt.lower()}_fwd"]
+            tumor_alt_rev = evidence[f"tumor_{alt.lower()}_rev"]
+            normal_alt_fwd = evidence[f"normal_{alt.lower()}_fwd"]
+            normal_alt_rev = evidence[f"normal_{alt.lower()}_rev"]
+            tumor_alt = tumor_alt_fwd + tumor_alt_rev
+            normal_alt = normal_alt_fwd + normal_alt_rev
+            if tumor_alt == normal_alt == 0:
                 continue
 
             known_reference = ref in BASE_INDEX
-            query_ref_fwd = evidence[f"QUERY_{ref}_FWD"] if known_reference else 0
-            query_ref_rev = evidence[f"QUERY_{ref}_REV"] if known_reference else 0
-            baseline_ref_fwd = evidence[f"BASELINE_{ref}_FWD"] if known_reference else 0
-            baseline_ref_rev = evidence[f"BASELINE_{ref}_REV"] if known_reference else 0
-            query_ref = query_ref_fwd + query_ref_rev
-            baseline_ref = baseline_ref_fwd + baseline_ref_rev
-            query_depth = evidence["QUERY_DEPTH"]
-            baseline_depth = evidence["BASELINE_DEPTH"]
-            query_af = query_alt / query_depth if query_depth else 0.0
-            baseline_af = baseline_alt / baseline_depth if baseline_depth else 0.0
+            reference_key = ref.lower()
+            tumor_ref_fwd = evidence[f"tumor_{reference_key}_fwd"] if known_reference else 0
+            tumor_ref_rev = evidence[f"tumor_{reference_key}_rev"] if known_reference else 0
+            normal_ref_fwd = evidence[f"normal_{reference_key}_fwd"] if known_reference else 0
+            normal_ref_rev = evidence[f"normal_{reference_key}_rev"] if known_reference else 0
+            tumor_ref = tumor_ref_fwd + tumor_ref_rev
+            normal_ref = normal_ref_fwd + normal_ref_rev
+            tumor_depth = evidence["tumor_dp"]
+            normal_depth = evidence["normal_dp"]
+            tumor_af = tumor_alt / tumor_depth if tumor_depth else 0.0
+            normal_af = normal_alt / normal_depth if normal_depth else 0.0
 
-            # Smoothed so a zero-count baseline yields a finite, ordered ratio.
-            ratio = ((query_alt + 0.5) / (query_depth + 1)) / (
-                (baseline_alt + 0.5) / (baseline_depth + 1)
-            )
             enrichment_p = _fisher_p(
                 [
-                    [query_alt, max(0, query_depth - query_alt)],
-                    [baseline_alt, max(0, baseline_depth - baseline_alt)],
+                    [tumor_alt, max(0, tumor_depth - tumor_alt)],
+                    [normal_alt, max(0, normal_depth - normal_alt)],
                 ],
                 alternative="greater",
             )
 
             error_rate = error_rates.get(f"{ref}>{alt}", MIN_ERROR_RATE)
             sequencing_error_p = (
-                float(binom.sf(query_alt - 1, query_depth, error_rate))
-                if query_depth and query_alt
+                float(binom.sf(tumor_alt - 1, tumor_depth, error_rate))
+                if tumor_depth and tumor_alt
                 else 1.0
             )
 
-            strand_p = _fisher_p([[query_alt_fwd, query_alt_rev], [query_ref_fwd, query_ref_rev]])
-            alt_f1r2, alt_f2r1 = (
-                int(query.orientation[index, alternate_allele, 0]),
-                int(query.orientation[index, alternate_allele, 1]),
-            )
-            ref_f1r2, ref_f2r1 = (
-                (
-                    int(query.orientation[index, reference_allele, 0]),
-                    int(query.orientation[index, reference_allele, 1]),
-                )
-                if reference_allele is not None
-                else (0, 0)
-            )
+            strand_p = _fisher_p([[tumor_alt_fwd, tumor_alt_rev], [tumor_ref_fwd, tumor_ref_rev]])
+            tumor_alt_f1r2, tumor_alt_f2r1 = _orientation(tumor, index, alternate_allele)
+            tumor_ref_f1r2, tumor_ref_f2r1 = _orientation(tumor, index, reference_allele)
+            normal_alt_f1r2, normal_alt_f2r1 = _orientation(normal, index, alternate_allele)
+            normal_ref_f1r2, normal_ref_f2r1 = _orientation(normal, index, reference_allele)
             # Only meaningful when both mates were present; single-end and
             # orphan input leaves every orientation count at zero.
             orientation_p = (
-                _fisher_p([[alt_f1r2, alt_f2r1], [ref_f1r2, ref_f2r1]])
-                if (alt_f1r2 + alt_f2r1) and (ref_f1r2 + ref_f2r1)
+                _fisher_p([[tumor_alt_f1r2, tumor_alt_f2r1], [tumor_ref_f1r2, tumor_ref_f2r1]])
+                if (tumor_alt_f1r2 + tumor_alt_f2r1) and (tumor_ref_f1r2 + tumor_ref_f2r1)
                 else 1.0
             )
 
-            query_ci = binomial_ci(query_alt, query_depth)
-            baseline_ci = binomial_ci(baseline_alt, baseline_depth)
+            tumor_ci = binomial_ci(tumor_alt, tumor_depth)
+            normal_ci = binomial_ci(normal_alt, normal_depth)
 
             row = {
-                "CHROM": evidence["CHROM"],
-                "POS": evidence["POS"],
-                "REF": ref,
-                "ALT": alt,
-                "QUERY_DEPTH": query_depth,
-                "QUERY_REF_COUNT": query_ref,
-                "QUERY_REF_FWD": query_ref_fwd,
-                "QUERY_REF_REV": query_ref_rev,
-                "QUERY_ALT_COUNT": query_alt,
-                "QUERY_ALT_FWD": query_alt_fwd,
-                "QUERY_ALT_REV": query_alt_rev,
-                "QUERY_AF": query_af,
-                "QUERY_AF_CI_LOW": query_ci[0],
-                "QUERY_AF_CI_HIGH": query_ci[1],
-                "BASELINE_DEPTH": baseline_depth,
-                "BASELINE_REF_COUNT": baseline_ref,
-                "BASELINE_REF_FWD": baseline_ref_fwd,
-                "BASELINE_REF_REV": baseline_ref_rev,
-                "BASELINE_ALT_COUNT": baseline_alt,
-                "BASELINE_ALT_FWD": baseline_alt_fwd,
-                "BASELINE_ALT_REV": baseline_alt_rev,
-                "BASELINE_AF": baseline_af,
-                "BASELINE_AF_CI_LOW": baseline_ci[0],
-                "BASELINE_AF_CI_HIGH": baseline_ci[1],
-                "QUERY_BASELINE_RATIO": ratio,
-                "ERROR_RATE": error_rate,
-                "SEQUENCING_ERROR_P": sequencing_error_p,
-                "ENRICHMENT_P": enrichment_p,
-                "ENRICHMENT_Q": 1.0,
-                "STRAND_P": strand_p,
-                "ORIENTATION_P": orientation_p,
+                "chrom": evidence["chrom"],
+                "pos": evidence["pos"],
+                "ref": ref,
+                "alt": alt,
+                "normal_dp": normal_depth,
+                "normal_ref_count": normal_ref,
+                "normal_ac": normal_alt,
+                "normal_af": normal_af,
+                "tumor_dp": tumor_depth,
+                "tumor_ref_count": tumor_ref,
+                "tumor_ac": tumor_alt,
+                "tumor_af": tumor_af,
+                "normal_ref_fwd": normal_ref_fwd,
+                "normal_ref_rev": normal_ref_rev,
+                "normal_alt_fwd": normal_alt_fwd,
+                "normal_alt_rev": normal_alt_rev,
+                "tumor_ref_fwd": tumor_ref_fwd,
+                "tumor_ref_rev": tumor_ref_rev,
+                "tumor_alt_fwd": tumor_alt_fwd,
+                "tumor_alt_rev": tumor_alt_rev,
+                "normal_ref_f1r2": normal_ref_f1r2,
+                "normal_ref_f2r1": normal_ref_f2r1,
+                "normal_alt_f1r2": normal_alt_f1r2,
+                "normal_alt_f2r1": normal_alt_f2r1,
+                "tumor_ref_f1r2": tumor_ref_f1r2,
+                "tumor_ref_f2r1": tumor_ref_f2r1,
+                "tumor_alt_f1r2": tumor_alt_f1r2,
+                "tumor_alt_f2r1": tumor_alt_f2r1,
+                "normal_af_ci_low": normal_ci[0],
+                "normal_af_ci_high": normal_ci[1],
+                "tumor_af_ci_low": tumor_ci[0],
+                "tumor_af_ci_high": tumor_ci[1],
+                "error_rate": error_rate,
+                "seq_p": sequencing_error_p,
+                "enrich_p": enrichment_p,
+                "enrich_q": 1.0,
+                "strand_p": strand_p,
+                "orient_p": orientation_p,
             }
 
-            for name, histograms, alt_pair, ref_pair in (
-                ("QUERY", query, (alt_f1r2, alt_f2r1), (ref_f1r2, ref_f2r1)),
-                (
-                    "BASELINE",
-                    baseline,
-                    (
-                        int(baseline.orientation[index, alternate_allele, 0]),
-                        int(baseline.orientation[index, alternate_allele, 1]),
-                    ),
-                    (
-                        (
-                            int(baseline.orientation[index, reference_allele, 0]),
-                            int(baseline.orientation[index, reference_allele, 1]),
-                        )
-                        if reference_allele is not None
-                        else (0, 0)
-                    ),
-                ),
-            ):
-                row[f"{name}_REF_F1R2"], row[f"{name}_REF_F2R1"] = ref_pair
-                row[f"{name}_ALT_F1R2"], row[f"{name}_ALT_F2R1"] = alt_pair
-                for label, allele in (("REF", reference_allele), ("ALT", alternate_allele)):
-                    for metric, value in _allele_quality(histograms, index, allele).items():
-                        row[f"{name}_{label}_{metric}"] = value
-
-            row.update(
-                {
-                    f"QUERY_{key}": value
-                    for key, value in _rank_sums(
-                        query, index, alternate_allele, reference_allele
-                    ).items()
-                }
-            )
+            # Quality medians are tumour-derived only: nothing filters on the
+            # normal-side values and they doubled the record for no reader.
+            for label, allele in (("ref", reference_allele), ("alt", alternate_allele)):
+                for metric, value in _allele_quality(tumor, index, allele).items():
+                    row[f"tumor_{label}_{metric}"] = value
+            row.update(_rank_sums(tumor, index, alternate_allele, reference_allele))
 
             candidates.append(row)
             p_values.append(enrichment_p)
 
     for row, q_value in zip(candidates, benjamini_hochberg(p_values), strict=True):
-        row["ENRICHMENT_Q"] = q_value
-        row["FILTER"] = ";".join(_filters(row, config, blacklist, length)) or "PASS"
+        row["enrich_q"] = q_value
+        row["qual"] = round(phred(q_value), 2)
+        row["filter"] = ";".join(_filters(row, config, blacklist, length)) or "PASS"
     return candidates
 
 
 def _filters(row: dict, config: PairedConfig, blacklist: set[int], length: int) -> list[str]:
     """Technical and statistical flags; an empty list means PASS."""
     filters = []
-    if row["QUERY_DEPTH"] < config.min_query_depth:
-        filters.append("LOW_QUERY_DEPTH")
-    if row["BASELINE_DEPTH"] < config.min_baseline_depth:
-        filters.append("LOW_BASELINE_DEPTH")
-    if row["QUERY_ALT_COUNT"] < config.min_alt_observations:
+    if row["tumor_dp"] < config.min_tumor_depth:
+        filters.append("LOW_TUMOR_DEPTH")
+    if row["normal_dp"] < config.min_normal_depth:
+        filters.append("LOW_NORMAL_DEPTH")
+    if row["tumor_ac"] < config.min_alt_observations:
         filters.append("LOW_ALT_OBSERVATIONS")
-    if row["QUERY_AF"] < config.min_query_af:
-        filters.append("LOW_QUERY_AF")
-    if row["BASELINE_AF"] > config.max_baseline_af:
-        filters.append("HIGH_BASELINE_AF")
-    if row["POS"] in blacklist:
+    if row["tumor_af"] < config.min_tumor_af:
+        filters.append("LOW_TUMOR_AF")
+    if row["normal_af"] > config.max_normal_af:
+        filters.append("HIGH_NORMAL_AF")
+    if row["pos"] in blacklist:
         filters.append("BLACKLIST")
     if not config.shifted_reference_supplied and (
-        row["POS"] <= config.circular_edge_bases or row["POS"] > length - config.circular_edge_bases
+        row["pos"] <= config.circular_edge_bases or row["pos"] > length - config.circular_edge_bases
     ):
         filters.append("CIRCULAR_EDGE_UNRESOLVED")
     if (
-        row["STRAND_P"] < ARTEFACT_P
-        or _strand_bias(row["QUERY_ALT_FWD"], row["QUERY_ALT_REV"]) > config.max_strand_bias
+        row["strand_p"] < ARTEFACT_P
+        or _strand_bias(row["tumor_alt_fwd"], row["tumor_alt_rev"]) > config.max_strand_bias
     ):
         filters.append("STRAND_BIAS")
-    if row["ORIENTATION_P"] < ARTEFACT_P:
+    if row["orient_p"] < ARTEFACT_P:
         filters.append("ORIENTATION_BIAS")
-    if row["SEQUENCING_ERROR_P"] > ARTEFACT_P:
+    if row["seq_p"] > ARTEFACT_P:
         filters.append("WEAK_EVIDENCE")
-    if row["ENRICHMENT_Q"] > 0.05:
+    if row["enrich_q"] > 0.05:
         filters.append("NOT_SIGNIFICANT")
+    # A negative z means the alternate observations sit systematically lower on
+    # the metric than the reference ones at the same position, which is the
+    # artefact direction; a positive skew is not evidence against the allele.
+    for name, flag in (("rsbq", "BASE_QUAL"), ("rsmq", "MAP_QUAL"), ("rspos", "POSITION")):
+        if row[name] < 0 and row[f"{name}_p"] < ARTEFACT_P:
+            filters.append(flag)
     # A NuMT carried at one autosomal copy contributes roughly the autosomal
     # median depth of reads, so alternate support at or below that is not
     # separable from nuclear leakage.
     if (
         config.autosomal_median_depth is not None
-        and row["QUERY_ALT_COUNT"] <= config.autosomal_median_depth
+        and row["tumor_ac"] <= config.autosomal_median_depth
     ):
         filters.append("POSSIBLE_NUMT")
     return filters

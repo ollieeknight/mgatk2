@@ -44,13 +44,6 @@ Every function that touches a matrix streams it in blocks of 512 cells, which is
 
 `identify_variants` follows Signac's conventions: the strand correlation uses cells carrying the alt allele on either strand, and VMR is the variance of the per-cell allele frequency over the bulk frequency plus a `1e-11` pseudocount. `stabilise_variance = TRUE` holds cells below `low_coverage_threshold` at the bulk frequency.
 
-## Tests
-
-```bash
-Rscript R/test_mgatk2_functions.R
-```
-
-Builds a small HDF5 pair with a planted variant and asserts it comes back with the right frequency, strand correlation and VMR. Run from the repository root.
 
 ## HDF5 file structure
 

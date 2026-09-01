@@ -63,22 +63,22 @@ def paired_files(tmp_path, alignment_factory):
     reference.write_text(">chrM\n" + "A" * 40 + "\n")
     pysam.faidx(str(reference))
 
-    query_reads = []
+    tumor_reads = []
     for index, start in enumerate((3, 4, 5)):
         sequence = list("A" * 15)
         sequence[10 - start] = "C"
-        query_reads.append({"name": f"query{index}", "start": start, "sequence": "".join(sequence)})
-    baseline_reads = [
-        {"name": f"baseline{index}", "start": start} for index, start in enumerate((3, 4, 5))
+        tumor_reads.append({"name": f"tumor{index}", "start": start, "sequence": "".join(sequence)})
+    normal_reads = [
+        {"name": f"normal{index}", "start": start} for index, start in enumerate((3, 4, 5))
     ]
-    query_bam = alignment_factory(tmp_path / "query.bam", reference, query_reads)
-    baseline_bam = alignment_factory(tmp_path / "baseline.bam", reference, baseline_reads)
-    query_cram = alignment_factory(tmp_path / "query.cram", reference, query_reads)
-    baseline_cram = alignment_factory(tmp_path / "baseline.cram", reference, baseline_reads)
+    tumor_bam = alignment_factory(tmp_path / "tumor.bam", reference, tumor_reads)
+    normal_bam = alignment_factory(tmp_path / "normal.bam", reference, normal_reads)
+    tumor_cram = alignment_factory(tmp_path / "tumor.cram", reference, tumor_reads)
+    normal_cram = alignment_factory(tmp_path / "normal.cram", reference, normal_reads)
     return {
         "reference": reference,
-        "query_bam": query_bam,
-        "baseline_bam": baseline_bam,
-        "query_cram": query_cram,
-        "baseline_cram": baseline_cram,
+        "tumor_bam": tumor_bam,
+        "normal_bam": normal_bam,
+        "tumor_cram": tumor_cram,
+        "normal_cram": normal_cram,
     }
