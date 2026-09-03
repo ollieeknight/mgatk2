@@ -160,15 +160,17 @@ class _Shard:
                         continue
                     cell_seen.add(key)
 
-                n_reads[cell] += 1
-                n_paired[cell] += read.is_paired
-
                 if read.mapping_quality < min_mapq:
                     continue
 
                 sequence = read.query_sequence
                 if not sequence:
                     continue
+
+                # Counted only once the read is certain to contribute bases, so
+                # this stays equal to the Tn5 cut total.
+                n_reads[cell] += 1
+                n_paired[cell] += read.is_paired
 
                 strand = 1 if read.is_reverse else 0
 
@@ -258,8 +260,10 @@ class _Shard:
         if max_bias >= 1.0:
             return  # a ratio can never exceed 1.0, so the filter is a no-op
 
-        per_base = self.counts.sum(axis=3, keepdims=True)
-        biased = (self.counts.max(axis=3, keepdims=True) > max_bias * per_base) & (per_base > 0)
+        # Same metric `paired` applies: |forward - reverse| / total.
+        totals = self.counts.sum(axis=3, keepdims=True)
+        imbalance = np.abs(np.diff(self.counts.astype(np.int64), axis=3))
+        biased = (imbalance > max_bias * totals) & (totals > 0)
         self.counts[np.broadcast_to(biased, self.counts.shape)] = 0
 
     def _summarise(self, total_reads: int, duplicates: int) -> ShardResult:
