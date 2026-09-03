@@ -10,6 +10,10 @@ from core.exceptions import InvalidInputError
 
 logger = logging.getLogger(__name__)
 
+# CellRanger has shipped all three spellings; treat them as one schema.
+CELL_FLAG_COLUMNS = ("is__cell_barcode", "is_cell_barcode", "is_cell")
+TRUE_VALUES = frozenset({"1", "1.0", "True", "true", "TRUE"})
+
 
 def load_singlecell_csv(
     csv_file: str,
@@ -21,7 +25,6 @@ def load_singlecell_csv(
     try:
         barcodes = []
         metadata: dict[str, list] = {}
-        total_rows = 0
 
         with open(csv_file) as f:
             reader = csv.DictReader(f)
@@ -30,16 +33,20 @@ def load_singlecell_csv(
             if headers is None:
                 raise InvalidInputError("CSV file has no headers")
 
-            if "is__cell_barcode" not in headers:
-                raise InvalidInputError("singlecell.csv missing 'is__cell_barcode' column")
+            cell_column = next(
+                (name for name in CELL_FLAG_COLUMNS if name in headers),
+                None,
+            )
+            if cell_column is None:
+                raise InvalidInputError(
+                    f"singlecell.csv missing a cell-flag column ({', '.join(CELL_FLAG_COLUMNS)})"
+                )
 
             for header in headers:
                 metadata[header] = []
 
             for row in reader:
-                total_rows += 1
-
-                if row.get("is__cell_barcode") != "1":
+                if row.get(cell_column, "0") not in TRUE_VALUES:
                     continue
 
                 barcode = row["barcode"]
@@ -58,7 +65,7 @@ def load_singlecell_csv(
                     metadata[header].append(value)
 
         if len(barcodes) == 0:
-            raise InvalidInputError(f"No cells found with is__cell_barcode == 1 in {csv_file}")
+            raise InvalidInputError(f"No cells found with {cell_column} set in {csv_file}")
 
         return barcodes, metadata
 
@@ -83,7 +90,7 @@ def load_barcode_csv(
         raise InvalidInputError(f"Barcode file is empty: {csv_file}")
 
     fields = next(csv.reader([header]))
-    if any(col in fields for col in ("is__cell_barcode", "is_cell_barcode", "is_cell")):
+    if any(col in fields for col in CELL_FLAG_COLUMNS):
         return load_singlecell_csv(csv_file)
 
     # 10x Multi sample_filtered_barcodes.csv: headerless "<reference>,<barcode>" rows
@@ -107,15 +114,36 @@ def validate_bam_file(bam_path: str) -> None:
     if not bam_path.endswith(".bam"):
         raise InvalidInputError(f"Input file must have .bam extension: {bam_path}")
 
-    if not os.path.exists(bam_path + ".bai"):
-        logger.info("Creating BAM index for: %s", bam_path)
-        try:
-            pysam.index(bam_path)
-        except Exception as e:
-            raise InvalidInputError(f"Failed to create BAM index: {e}") from e
+    ensure_alignment_index(bam_path)
 
-        if not os.path.exists(bam_path + ".bai"):
-            raise InvalidInputError(f"Cannot create index for BAM: {bam_path}")
+
+def has_alignment_index(alignment_path: str) -> bool:
+    """True when any samtools index flavour is present beside the alignment."""
+    stem = os.path.splitext(alignment_path)[0]
+    return any(
+        os.path.exists(candidate)
+        for candidate in (
+            alignment_path + ".bai",
+            alignment_path + ".csi",
+            alignment_path + ".crai",
+            stem + ".bai",
+            stem + ".csi",
+            stem + ".crai",
+        )
+    )
+
+
+def ensure_alignment_index(alignment_path: str) -> None:
+    """Create an index beside the alignment when none of the flavours exist."""
+    if has_alignment_index(alignment_path):
+        return
+    logger.info("Creating alignment index for: %s", alignment_path)
+    try:
+        pysam.index(alignment_path)
+    except Exception as e:
+        raise InvalidInputError(f"Failed to create alignment index: {e}") from e
+    if not has_alignment_index(alignment_path):
+        raise InvalidInputError(f"Cannot create index for: {alignment_path}")
 
 
 def validate_barcode_file(barcode_file: str) -> None:

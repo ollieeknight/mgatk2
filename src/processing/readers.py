@@ -159,7 +159,6 @@ class BAMReader:
                             is_read2=read.is_read2,
                             is_qcfail=read.is_qcfail,
                             is_duplicate=read.is_duplicate,
-                            read_group=read.get_tag("RG") if read.has_tag("RG") else None,
                         )
                     )
         except InvalidInputError:

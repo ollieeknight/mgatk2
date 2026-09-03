@@ -53,7 +53,6 @@ class SimpleRead:
     is_read2: bool = False
     is_qcfail: bool = False
     is_duplicate: bool = False
-    read_group: str | None = None
 
     def get_aligned_pairs(self) -> list[tuple[int, int]]:
         """Get aligned (query_pos, ref_pos) pairs."""
@@ -146,7 +145,7 @@ class PipelineConfig:
         self,
         min_baseq: int = 20,
         min_mapq: int = 30,
-        max_strand_bias: float = 0.9,
+        max_strand_bias: float = 1.0,
         min_distance_from_end: int = 5,
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,

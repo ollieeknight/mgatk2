@@ -76,7 +76,6 @@ class IncrementalHDF5Writer:
         self.cell_stats: list[dict] = []
         self.base_totals = np.zeros((self.n_positions, 4), dtype=np.int64)
         self.write_error_count = 0
-        self.cells_written = 0
 
         logger.info("Staging HDF5 output in %s", self.staging_dir)
         self._init_hdf5_files()
@@ -156,7 +155,6 @@ class IncrementalHDF5Writer:
 
         self.base_totals += result.base_totals
         self.cell_stats.extend(_cell_stat_rows(result, barcodes))
-        self.cells_written += int(np.count_nonzero(result.kept))
 
     def _flush(self):
         self.counts_file.flush()
