@@ -1,4 +1,4 @@
-"""Pure tumor/normal SNV candidate construction and classification."""
+"""Pure tumour/normal SNV candidate construction and classification."""
 
 from __future__ import annotations
 

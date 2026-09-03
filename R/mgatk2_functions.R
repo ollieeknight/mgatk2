@@ -209,7 +209,7 @@ identify_variants <- function(mgatk_data, min_cells = 0, min_strand_cor = 0, min
   cov_total <- Matrix::colSums(cov)
   
   results <- lapply(bases, function(b) {
-    # Match the old behavior perfectly: only exclude `b`, don't exclude "N" explicitly
+    # Match mgatk behaviour: exclude `b` only, never "N" explicitly
     idx <- which(mgatk_data$refallele != b)
     if (length(idx) == 0) return(NULL)
     

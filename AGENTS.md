@@ -61,8 +61,11 @@ in `processing/` or `file_io/writers.py`.
 - CIGAR insertions advance query offset. Lose that = silently shift every base
   after insertion onto wrong reference position.
 - Tn5 cut sites record exactly one insertion per retained read, at read's
-  outermost aligned reference base. Cut totals must equal retained read count.
-  Disable with `--no-tn5`.
+  outermost aligned reference base. Cut totals must equal retained read count,
+  so `n_reads`/`n_paired` increment only after the MAPQ and missing-sequence
+  filters. Disable with `--no-tn5` on `run`, `tenx`, or `call`.
+- `--max-strand-bias` means `|forward - reverse| / total` everywhere, single-cell
+  and paired. Single-cell default `1.0` = no-op.
 - `mean_depth` and `median_depth` average over covered positions only — historic,
   inconsistent with `genome_coverage`. Changing it = QC-visible break.
 - HDF5 matrices stored positions × cells; `hdf5r` read transposed cells ×
@@ -88,8 +91,10 @@ in `processing/` or `file_io/writers.py`.
   normal. `SEQP` vs `ERR` = tumour alt above learned substitution error rate.
   Fisher alone assume shared error rate, so depth asymmetry alone look
   significant.
-- Error rate learned from normal, excluding sites with plausible real allele.
-  Drop that exclusion = estimate absorb the heteroplasmy it must detect.
+- Error rate learned from normal, excluding sites whose normal allele fraction
+  exceeds `--max-normal-af`. Drop that exclusion = estimate absorb the
+  heteroplasmy it must detect. Exclusion threshold is that flag, never a
+  separate constant: two numbers for one judgement drift apart.
 - Orientation test only valid when both mates present. Single-end/orphan input
   leave F1R2/F2R1 zero; test must return 1.0, never flag.
 - Outputs = VCF + `.tbi` + callable BED. No TSV, no sidecar JSON, no log.
@@ -135,6 +140,42 @@ Panel of normals rejected on arithmetic, not effort. chrM = 16,569 bp, and at
 normals, ~100% by 5,000x. Presence-based PON blacklist whole genome. If ever
 revisited, must be site-specific beta-binomial background model
 (shearwater/deepSNV), never a site list.
+
+## CLI surface
+
+- `run`, `tenx`, and `call` share one option builder, `singlecell_options(preset)`.
+  Three verbatim copies is how their defaults, help text, and exposed filters
+  drifted apart. Presets are pinned in `tests/test_single_cell.py`; change a
+  default there deliberately or not at all.
+- Every option on every command carries `help`; `tests/test_single_cell.py`
+  enforces it. An undocumented option is unusable from the terminal.
+- Every option must do something. `--threads` on `call` was inert for as long
+  as `call` looped serially, and `--no-mask-numts` turned `hardmask-fasta` into
+  a line-wrapper. An option that cannot change the output is a bug.
+- `CONTEXT_SETTINGS` (in `cli/base.py`) goes on every command, not only the
+  group: Click resolves `help_option_names` per command context, so a
+  standalone-invoked command otherwise loses `-h`.
+- `--dry-run` opens every input alignment and checks the mitochondrial contig
+  and an index are present, on `run`, `tenx`, `call`, and `paired`. It creates
+  no files, indexes included; a dry run that only echoes the configuration
+  cannot catch either failure, which are the two that waste a whole run.
+- `call` runs one process per BAM. Samples must not share a process: each
+  installs its own root-logger file handler via `setup_file_logging`.
+- `qc/run_config.json` and `qc/summary.txt` carry the same run metadata: JSON
+  for machines, text for people. The HTML report reads the JSON, so nothing
+  parses the summary's prose. `paired` still writes no sidecar JSON; its
+  provenance lives in the VCF header.
+- The HTML report reads each HDF5 file once and sums positions x cells in
+  column blocks, then passes arrays to the plot functions. No plot may open a
+  file or load a whole matrix itself: that cost hundreds of megabytes per plot,
+  several times over.
+- Bulk runs (`barcode_list == ["bulk"]`) emit no HTML report. It is a per-cell
+  QC document and a bulk sample is one pseudo-cell.
+- Command modules import at module scope, not inside the command body. Lazy
+  imports once hid `hardmask-fasta` importing two deleted modules through a
+  whole release.
+- `hardmask-fasta` masks nuclear NUMT regions only, so it takes no
+  mitochondrial arguments. Output is gzipped when the name ends `.gz`.
 
 ## Dependencies and release surfaces
 
