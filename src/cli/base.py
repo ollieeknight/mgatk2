@@ -4,6 +4,11 @@ from importlib.metadata import version
 
 import click
 
+# Click resolves help_option_names per command context, so every command needs
+# this, not only the group: a command invoked standalone otherwise only ever
+# answers to --help.
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+
 
 class OrderedGroup(click.Group):
     """Click group that preserves command order in help text"""
@@ -40,7 +45,7 @@ class OrderedGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-@click.group(cls=OrderedGroup)
+@click.group(cls=OrderedGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=version("mgatk2"))
 def cli():
     """

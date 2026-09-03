@@ -5,16 +5,17 @@ import os
 
 import click
 
+from cli.base import CONTEXT_SETTINGS
 from core.exceptions import InvalidInputError, ProcessingError
 
-from ..options import common_options
+from ..options import singlecell_options
 from ..utils import get_10x_parent_directory_name, run_pipeline_command
 
 logger = logging.getLogger(__name__)
 
 
-@click.command()
-@common_options
+@click.command(context_settings=CONTEXT_SETTINGS)
+@singlecell_options("run")
 def run(
     bam_path,
     mito_genome,
@@ -34,6 +35,8 @@ def run(
     output_format,
     dry_run,
     compute_tn5,
+    nh_max,
+    nm_max,
 ):
     """Run mgatk2 with optimised defaults"""
     try:
@@ -56,6 +59,8 @@ def run(
             output_format=output_format,
             dry_run=dry_run,
             compute_tn5=compute_tn5,
+            nh_max=nh_max,
+            nm_max=nm_max,
             original_bam_path=bam_path,
             report_title=get_10x_parent_directory_name(bam_path),
             report_subtitle="mgatk2 output analysis",

@@ -1,12 +1,19 @@
 """Call commands for mgatk2"""
 
 import logging
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import click
 
-from ..options import call_options
+from cli.base import CONTEXT_SETTINGS
+from processing.processors import MP_CONTEXT
+
+from ..options import singlecell_options
 from ..utils import (
+    check_alignment,
+    determine_cores,
     normalise_mito_chr,
     run_pipeline_command,
 )
@@ -14,8 +21,18 @@ from ..utils import (
 logger = logging.getLogger(__name__)
 
 
-@click.command()
-@call_options
+def _run_one_sample(arguments: dict) -> tuple[str, int]:
+    """Process one bulk BAM in its own process.
+
+    Each sample owns a whole pipeline, including the root-logger file handler
+    that `setup_file_logging` installs, so samples must not share a process.
+    """
+    sample_name = arguments.pop("sample_name")
+    return sample_name, run_pipeline_command(**arguments)
+
+
+@click.command(context_settings=CONTEXT_SETTINGS)
+@singlecell_options("call")
 def call(
     bam_path,
     mito_genome,
@@ -30,6 +47,9 @@ def call(
     dedup_mode,
     output_format,
     dry_run,
+    compute_tn5,
+    nh_max,
+    nm_max,
 ):
     """Run mgatk2 and treat each bam file as a single cell"""
     if verbose:
@@ -62,42 +82,76 @@ def call(
             logger.info(f"  {bam_file.name} ({bam_file.stat().st_size / (1024**3):.2f} GB)")
 
         if dry_run:
+            for bam_file in bam_files:
+                check_alignment(str(bam_file), mito_chr)
             _show_call_configuration(bam_files, output_dir, mito_chr, ncores)
             return
 
-        for i, bam_file in enumerate(bam_files, 1):
-            sample_name = bam_file.stem  # filename without .bam
-            sample_output = Path(output_dir) / sample_name
-
-            logger.info(f"[{i}/{len(bam_files)}] Processing: {bam_file.name} → {sample_output}")
-
+        tasks = []
+        for bam_file in bam_files:
+            sample_output = Path(output_dir) / bam_file.stem
             sample_output.mkdir(parents=True, exist_ok=True)
-
-            status = run_pipeline_command(
-                bam_path=str(bam_file),
-                output_dir=str(sample_output),
-                barcode_file="bulk",
-                barcode_tag="CB",
-                min_barcode_reads=10,
-                mito_genome=mito_chr,
-                ncores=ncores,
-                verbose=verbose,
-                max_memory=max_memory,
-                base_qual=base_qual,
-                min_mapq=min_mapq,
-                min_reads=0,
-                max_strand_bias=max_strand_bias,
-                min_distance_from_end=min_distance_from_end,
-                dedup_mode=dedup_mode,
-                output_format=output_format,
-                dry_run=False,
+            tasks.append(
+                {
+                    "sample_name": bam_file.stem,
+                    "bam_path": str(bam_file),
+                    "output_dir": str(sample_output),
+                    "barcode_file": "bulk",
+                    "barcode_tag": "CB",
+                    "min_barcode_reads": 10,
+                    "mito_genome": mito_chr,
+                    # Each sample is one bulk pseudo-cell, so a sample never
+                    # shards; the thread budget buys concurrency across samples.
+                    "ncores": 1,
+                    "verbose": verbose,
+                    "max_memory": max_memory,
+                    "base_qual": base_qual,
+                    "min_mapq": min_mapq,
+                    "min_reads": 0,
+                    "max_strand_bias": max_strand_bias,
+                    "min_distance_from_end": min_distance_from_end,
+                    "dedup_mode": dedup_mode,
+                    "output_format": output_format,
+                    "dry_run": False,
+                    "compute_tn5": compute_tn5,
+                    "nh_max": nh_max,
+                    "nm_max": nm_max,
+                }
             )
-            if status:
-                raise SystemExit(status)
-            logger.info("Completed: %s", sample_name)
+
+        workers = min(determine_cores(ncores), len(tasks))
+        logger.info("Processing %s BAM files on %s worker(s)", len(tasks), workers)
+
+        failures = 0
+        if workers <= 1:
+            for index, task in enumerate(tasks, 1):
+                name = task["sample_name"]
+                logger.info("[%s/%s] Processing: %s", index, len(tasks), name)
+                failures += bool(_run_one_sample(dict(task))[1])
+        else:
+            with ProcessPoolExecutor(
+                max_workers=workers, mp_context=mp.get_context(MP_CONTEXT)
+            ) as pool:
+                futures = [pool.submit(_run_one_sample, dict(task)) for task in tasks]
+                for index, future in enumerate(as_completed(futures), 1):
+                    name, status = future.result()
+                    failures += bool(status)
+                    logger.info(
+                        "[%s/%s] %s: %s",
+                        index,
+                        len(tasks),
+                        name,
+                        "failed" if status else "complete",
+                    )
+
+        if failures:
+            logger.error("%s of %s BAM files failed", failures, len(tasks))
+            raise SystemExit(1)
 
         logger.info("Analysis completed for all %s BAM files", len(bam_files))
 
+    except SystemExit:
+        raise
     except KeyboardInterrupt:
         logger.info("Bulk analysis interrupted by user")
         raise SystemExit(130) from None

@@ -178,6 +178,15 @@ def test_paired_dry_run(paired_files, tmp_path):
     assert not (tmp_path / "pair.mt_variants.vcf.gz").exists()
 
 
+def test_paired_dry_run_rejects_a_missing_contig(paired_files, tmp_path):
+    result = CliRunner().invoke(
+        cli, [*_paired_args(paired_files, tmp_path), "--dry-run", "-g", "chrM_absent"]
+    )
+
+    assert result.exit_code != 0
+    assert "is absent from" in result.output
+
+
 def test_paired_rejects_the_same_input_twice(paired_files, tmp_path):
     arguments = _paired_args(paired_files, tmp_path)
     arguments[4] = str(paired_files["tumor_bam"])
@@ -331,3 +340,112 @@ def test_rank_sum_filters_fire_only_on_degraded_alternates(paired_files, tmp_pat
     for flag in ("BASE_QUAL", "MAP_QUAL", "POSITION"):
         assert flag in degraded["filter"]
         assert flag not in healthy["filter"]
+
+
+def test_every_paired_option_is_accepted_by_the_command(paired_files, tmp_path):
+    """The full option surface, exercised through the CLI rather than the config."""
+    blacklist = tmp_path / "chrM.bed"
+    blacklist.write_text("chrM\t0\t1\n")
+    output = tmp_path / "cli-out"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "paired",
+            "--tumor",
+            str(paired_files["tumor_bam"]),
+            "--normal",
+            str(paired_files["normal_bam"]),
+            "--reference",
+            str(paired_files["reference"]),
+            "--output",
+            str(output),
+            "--sample-name",
+            "pair",
+            "--genome",
+            "M",
+            "--quality",
+            "0",
+            "--mapq",
+            "0",
+            "--min-distance-from-end",
+            "0",
+            "--max-strand-bias",
+            "1.0",
+            "--deduplication",
+            "none",
+            "--min-tumor-depth",
+            "1",
+            "--min-normal-depth",
+            "1",
+            "--min-alt-observations",
+            "1",
+            "--min-tumor-af",
+            "0.0",
+            "--max-normal-af",
+            "0.5",
+            "--custom-blacklist",
+            str(blacklist),
+            "--autosomal-median-depth",
+            "0.5",
+            "--circular-edge-bases",
+            "2",
+            "--input-is-consensus",
+            "--verbose",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (output / "pair.mt_variants.vcf.gz").exists()
+    assert (output / "pair.mt_variants.vcf.gz.tbi").exists()
+    assert (output / "pair.mt_callable.bed.gz").exists()
+
+    qc = _qc(str(output / "pair.mt_variants.vcf.gz"))
+    # --genome M must reach the reference as the FASTA's own contig name.
+    assert qc["reference"]["chromosome"] == "chrM"
+    assert qc["deduplication"] == "none"
+    assert qc["numt_strategy"] == "autosomal_median_depth_and_MAPQ"
+    assert qc["blacklist_numt_strategy"] == "user_chrM_blacklist_and_MAPQ"
+    # The error-rate exclusion follows --max-normal-af rather than a constant.
+    assert qc["error_rate_real_allele_exclusion"] == 0.5
+
+
+def test_consensus_input_requires_deduplication_none(paired_files, tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "paired",
+            "--tumor",
+            str(paired_files["tumor_bam"]),
+            "--normal",
+            str(paired_files["normal_bam"]),
+            "--reference",
+            str(paired_files["reference"]),
+            "--output",
+            str(tmp_path / "out"),
+            "--sample-name",
+            "pair",
+            "--input-is-consensus",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "deduplication none" in result.output
+
+
+def test_every_declared_vcf_field_is_written(paired_files, tmp_path):
+    """Anything declared in the header but never populated is a silent gap."""
+    from file_io.paired_writers import VCF_FORMAT, VCF_INFO
+
+    result = run_paired_pipeline(_config(paired_files, tmp_path / "out", min_alt_observations=1))
+
+    with pysam.VariantFile(result.outputs["vcf"]) as vcf:
+        records = list(vcf)
+    assert records
+
+    for record in records:
+        for identifier, *_ in VCF_INFO:
+            assert identifier in record.info, identifier
+        for sample in record.samples.values():
+            for identifier, *_ in VCF_FORMAT:
+                assert sample.get(identifier) is not None, identifier

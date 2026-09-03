@@ -8,8 +8,16 @@ from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
 
+import pysam
+
 from core.exceptions import InvalidInputError, ProcessingError
-from utils.utils import validate_bam_file, validate_barcode_file
+from utils.utils import (
+    CELL_FLAG_COLUMNS,
+    TRUE_VALUES,
+    has_alignment_index,
+    validate_bam_file,
+    validate_barcode_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,29 @@ def _find_barcode_file(directory: Path) -> str | None:
 
     logger.warning("No barcode file found")
     return None
+
+
+def check_alignment(path: str, mito_chr: str, reference_filename: str | None = None) -> None:
+    """Open an alignment and confirm it can supply the requested contig.
+
+    A dry run that never opens the input cannot catch the two failures that
+    waste a whole run: a missing index and a mitochondrial contig named
+    something other than what was asked for. Indexing is left to the real run,
+    so a dry run creates no files.
+    """
+    try:
+        with pysam.AlignmentFile(path, reference_filename=reference_filename) as alignment:
+            references = set(alignment.references)
+    except Exception as exc:
+        raise InvalidInputError(f"Cannot read alignment {path}: {exc}") from exc
+
+    if mito_chr not in references:
+        raise InvalidInputError(
+            f"Contig {mito_chr} is absent from {path}. Header contigs: "
+            f"{', '.join(sorted(references)[:10]) or 'none'}"
+        )
+    if not has_alignment_index(path):
+        raise InvalidInputError(f"No index beside {path}; the run would have to build one")
 
 
 def normalise_mito_chr(mito_genome: str) -> str:
@@ -164,26 +195,29 @@ def run_pipeline_command(
         "hybrid",
     ]
 
-    if not dry_run:
-        log_file = Path(output_dir) / "output.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        setup_file_logging(log_file)
-
-        cmd_args = sys.argv
-        cmd_path = os.path.realpath(cmd_args[0]) if cmd_args else "mgatk2"
-        full_command = f"{cmd_path} {' '.join(cmd_args[1:])}"
-        logger.info("Command executed: %s", full_command)
-        logger.info("Working directory: %s", os.getcwd())
-        logger.info("Execution time: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
     try:
-        validate_bam_file(bam_path)
+        if not dry_run:
+            log_file = Path(output_dir) / "output.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            setup_file_logging(log_file)
+
+            cmd_args = sys.argv
+            cmd_path = os.path.realpath(cmd_args[0]) if cmd_args else "mgatk2"
+            full_command = f"{cmd_path} {' '.join(cmd_args[1:])}"
+            logger.info("Command executed: %s", full_command)
+            logger.info("Working directory: %s", os.getcwd())
+            logger.info("Execution time: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if not dry_run:
+            validate_bam_file(bam_path)
         if barcode_file and barcode_file != "bulk":
             validate_barcode_file(barcode_file)
 
         os.makedirs(output_dir, exist_ok=True)
 
         mito_chr = normalise_mito_chr(mito_genome)
+        if dry_run:
+            check_alignment(bam_path, mito_chr)
 
         if barcode_file is None:
             logger.info("No barcode file provided - will extract barcodes from BAM")
@@ -217,7 +251,7 @@ def run_pipeline_command(
         if report_subtitle is None:
             report_subtitle = "mgatk2 output analysis"
 
-        actual_cores = _determine_cores(ncores)
+        actual_cores = determine_cores(ncores)
 
         run_args = {
             "bam_path": bam_path,
@@ -253,6 +287,9 @@ def run_pipeline_command(
 
         return 0
 
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        return 130
     except InvalidInputError as e:
         logger.error("Input validation failed: %s", e)
         return 1
@@ -268,7 +305,7 @@ def run_pipeline_command(
         return 1
 
 
-def _determine_cores(ncores):
+def determine_cores(ncores):
     """Determine number of cores to use."""
     import multiprocessing
 
@@ -330,7 +367,7 @@ def _log_configuration(
     logger.info("  Output directory:       %s", os.path.realpath(output_dir))
     logger.info("  BAM prefix:             %s", mito_chr)
 
-    actual_cores = _determine_cores(ncores)
+    actual_cores = determine_cores(ncores)
     if ncores is None:
         slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
         slurm_ntasks = os.environ.get("SLURM_NTASKS")
@@ -369,13 +406,14 @@ def _log_configuration(
     format_display = "text files (.txt.gz)" if output_format == "txt" else "HDF5 (.h5)"
     logger.info("  Output format:          %s", format_display)
     logger.info("  Using mitochondrial chromosome: %s", mito_chr)
+    if max_memory:
+        logger.info("  Max memory limit:       %sGB", max_memory)
 
     if barcode_file == "bulk":
         logger.info("  Barcodes:               bulk (all reads)")
         return
     if barcode_file and barcode_file.endswith(".csv"):
         n_barcodes = 0
-        total_rows = 0
         column_found = None
 
         with open(barcode_file) as f:
@@ -386,13 +424,8 @@ def _log_configuration(
                 logger.warning("CSV file has no headers")
                 return
 
-            if "is__cell_barcode" in headers:
-                column_found = "is__cell_barcode"
-            elif "is_cell_barcode" in headers:
-                column_found = "is_cell_barcode"
-            elif "is_cell" in headers:
-                column_found = "is_cell"
-            else:
+            column_found = next((name for name in CELL_FLAG_COLUMNS if name in headers), None)
+            if column_found is None:
                 # 10x Multi sample_filtered_barcodes.csv: headerless, every row is a barcode
                 with open(barcode_file) as count_f:
                     n_barcodes = sum(1 for line in count_f if line.strip())
@@ -400,10 +433,9 @@ def _log_configuration(
                 return
 
             for row in reader:
-                total_rows += 1
                 if column_found:
                     is_cell = row.get(column_found, "0")
-                    if is_cell in ["1", "1.0", "True", "true", "TRUE"]:
+                    if is_cell in TRUE_VALUES:
                         n_barcodes += 1
     elif barcode_file:
         with open(barcode_file) as f:
@@ -412,6 +444,3 @@ def _log_configuration(
         logger.info("  Barcodes:               bulk (all reads)")
         return
     logger.info("  Barcodes:               %s", n_barcodes)
-
-    if max_memory:
-        logger.info("  Max memory limit:       %sGB", max_memory)

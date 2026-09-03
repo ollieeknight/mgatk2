@@ -8,12 +8,13 @@ from pathlib import Path
 
 import click
 
+from cli.base import CONTEXT_SETTINGS
 from core.config import PairedConfig
 from core.exceptions import MgatkError
 from processing.paired_pileup import PairedResult, run_paired_pipeline
 
 from ..options import paired_options
-from ..utils import normalise_mito_chr
+from ..utils import check_alignment, normalise_mito_chr
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,10 @@ def execute_paired(config: PairedConfig, verbose: bool = False) -> PairedResult:
         raise click.ClickException(str(exc)) from exc
 
 
-@click.command(short_help="Paired tumour/normal mitochondrial SNV evidence")
+@click.command(
+    short_help="Paired tumour/normal mitochondrial SNV evidence",
+    context_settings=CONTEXT_SETTINGS,
+)
 @paired_options
 def paired(
     tumor,
@@ -85,7 +89,12 @@ def paired(
 
     logger.info("Effective paired configuration: %s", asdict(config))
     if dry_run:
-        click.echo("Configuration valid; dry run complete.")
+        try:
+            for alignment in (config.tumor, config.normal):
+                check_alignment(alignment, config.mito_chr, reference_filename=config.reference)
+        except MgatkError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo("Configuration valid; both alignments readable; dry run complete.")
         return
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     result = execute_paired(config, verbose)
