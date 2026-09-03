@@ -129,7 +129,7 @@ def collect_sample_evidence(
 
 
 def estimate_error_rates(
-    normal: QualityHistograms, reference: str, max_real_allele_fraction: float = 0.01
+    normal: QualityHistograms, reference: str, max_real_allele_fraction: float
 ) -> dict[str, float]:
     """Per-substitution sequencing error rate, learned from the normal sample.
 
@@ -260,7 +260,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
     tumor, tumor_stats = collect_sample_evidence(config.tumor, config, len(reference))
     normal, normal_stats = collect_sample_evidence(config.normal, config, len(reference))
     evidence = build_position_evidence(chromosome, reference, tumor, normal, config, blacklist)
-    error_rates = estimate_error_rates(normal, reference)
+    error_rates = estimate_error_rates(normal, reference, config.max_normal_af)
     candidates = construct_candidates(evidence, tumor, normal, config, blacklist, error_rates)
     callable_positions = sum(row["_joint_callable"] for row in evidence)
     qc = {
@@ -316,6 +316,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             "pass_candidates": sum(row["filter"] == "PASS" for row in candidates),
         },
         "substitution_error_rates": error_rates,
+        "error_rate_real_allele_exclusion": config.max_normal_af,
         "numt_strategy": (
             "autosomal_median_depth_and_MAPQ"
             if config.autosomal_median_depth is not None
