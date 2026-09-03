@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pysam
-
 from analysis.qc import QCCalculator
 from core.config import (
     PipelineConfig,
@@ -15,6 +13,7 @@ from core.exceptions import InvalidInputError
 from file_io import IncrementalHDF5Writer, IncrementalTextWriter
 from processing.processors import process_shards
 from processing.readers import BAMReader
+from utils.utils import ensure_alignment_index
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +49,7 @@ class MtDNAPipeline:
         if not self.bam_path.exists():
             raise InvalidInputError(f"BAM file not found: {bam_path}")
 
-        index_path = Path(str(self.bam_path) + ".bai")
-        if not index_path.exists():
-            logger.warning("BAM index not found, creating: %s", index_path)
-            pysam.index(str(self.bam_path))
+        ensure_alignment_index(str(self.bam_path))
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,15 +99,17 @@ class MtDNAPipeline:
             n_cells_input,
             cells_passed,
         )
-        from file_io import write_run_summary
+        from file_io import write_run_config, write_run_summary
 
         write_run_summary(run_metadata, qc_dir / "summary.txt")
+        write_run_config(run_metadata, qc_dir / "run_config.json")
 
-        if self.output_format == "hdf5":
+        if self.output_format == "hdf5" and self.barcode_list != ["bulk"]:
             logger.info("Generating HTML QC report...")
             try:
                 if self.barcode_metadata is not None:
-                    # scATAC-seq: use ATAC report with Tn5 transposition plot
+                    # Barcode metadata only comes from a 10x scATAC singlecell.csv,
+                    # so its presence is what selects the Tn5 report.
                     from analysis.report import generate_html_report
 
                     generate_html_report(
@@ -123,7 +121,8 @@ class MtDNAPipeline:
                         input_dir=str(self.bam_path.parent),
                     )
                 else:
-                    # scRNA-seq: use RNA report with read start sites plot
+                    # No metadata means scRNA input, where read start sites
+                    # replace the Tn5 plot.
                     from analysis.report import generate_scrna_html_report
 
                     generate_scrna_html_report(
