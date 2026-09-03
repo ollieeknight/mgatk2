@@ -10,6 +10,18 @@ _BUNDLED: dict[str, Path] = {
 }
 
 
+def bundled_bed_path(build: str) -> Path:
+    """Path to a bundled NUMT BED, validated to exist."""
+    path = _BUNDLED.get(build.lower())
+    if path is None:
+        raise ValueError(
+            f"Unknown blacklist build '{build}'. Choose from: {', '.join(_BUNDLED)} or 'none'"
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"Blacklist BED not found: {path}")
+    return path
+
+
 def load_blacklist_positions(
     build: str = "hg38",
     custom_bed: str | None = None,
@@ -28,13 +40,12 @@ def load_blacklist_positions(
     if build.lower() == "none" and custom_bed is None:
         return set()
 
-    bed_path = Path(custom_bed) if custom_bed else _BUNDLED.get(build.lower())
-    if bed_path is None:
-        raise ValueError(
-            f"Unknown blacklist build '{build}'. Choose from: {', '.join(_BUNDLED)} or 'none'"
-        )
-    if not bed_path.exists():
-        raise FileNotFoundError(f"Blacklist BED not found: {bed_path}")
+    if custom_bed:
+        bed_path = Path(custom_bed)
+        if not bed_path.exists():
+            raise FileNotFoundError(f"Blacklist BED not found: {bed_path}")
+    else:
+        bed_path = bundled_bed_path(build)
 
     positions: set[int] = set()
     with open(bed_path) as f:
@@ -48,7 +59,7 @@ def load_blacklist_positions(
             chrom, start, end = parts[0], int(parts[1]), int(parts[2])
             if chrom != mito_chr:
                 continue
-            # BED is 0-based half-open [start, end) → convert to 1-based inclusive
+            # BED is 0-based half-open [start, end); positions here are 1-based inclusive
             for pos in range(start + 1, end + 1):
                 positions.add(pos)
 
