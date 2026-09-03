@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgatk2"
-version = "2.0.0"
+version = "1.4.0"
 description = "Mitochondrial genome analysis toolkit for single-cell data"
 readme = "README.md"
 authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]
@@ -48,3 +48,14 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403", "F405"]
+
+[tool.vulture]
+# Click resolves format_commands through the Group class; pysam sets qual,
+# reference_id, and the mate fields as C attributes. Vulture sees neither.
+ignore_names = [
+    "format_commands",
+    "qual",
+    "reference_id",
+    "next_reference_id",
+    "next_reference_start",
+]

@@ -47,5 +47,8 @@ Icon
 .vscode/
 .project
 .settings/
-
+.data/
 scrna_realdata_output/
+
+# uv lockfile: this project installs with pip/setuptools, so the lock is local only
+uv.lock
