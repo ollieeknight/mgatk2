@@ -57,7 +57,15 @@ in `processing/` or `file_io/writers.py`.
 - `tenx` default Signac-compatible text + alignment-start deduplication.
 - `call` treat every BAM in its input directory as one bulk sample.
 - Deduplication per cell, keyed on alignment start, strand, optionally template
-  length.
+  length, or — `umi` mode — cell barcode + `UB` tag value instead of position.
+  `umi` falls back to the alignment-start key per-read when `UB` is absent, so
+  a read is never silently dropped for lacking the tag.
+- `scrna` preset uses `umi` dedup, not `alignment_start`. Measured against real
+  10x GEX data (chrM, 22,037 cellbender-called cells): `alignment_start`
+  collapsed to 17.8M "unique" reads where true `(CB, UB)` collapse gives 7.2M
+  — a 2.49x overcount, because independent molecules starting at the same base
+  were wrongly merged. `tests/test_single_cell.py` pins the preset and the two
+  collapse/no-collapse cases (`test_umi_dedup_*`).
 - CIGAR insertions advance query offset. Lose that = silently shift every base
   after insertion onto wrong reference position.
 - Tn5 cut sites record exactly one insertion per retained read, at read's
@@ -71,6 +79,13 @@ in `processing/` or `file_io/writers.py`.
   so coordinate deduplication collapse whole amplicon to one read per cell.
   `tapestri` preset therefore force `none`. `tests/test_single_cell.py` pin both
   the preset and the destruction it prevent.
+- `tapestri` `barcode_tag: "RG"` verified against a real run (Kiel,
+  `2408_Timo_Tapestri_H12/VL00817_outs/HC12_run1.cells.bam`): 5,218 distinct
+  `@RG` lines, `ID` and `SM` both an 18bp cell barcode, one `RG:Z:` value per
+  read matching a header `@RG`. Not per-sample/lane. `mgatk2 run --assay
+  tapestri` on that BAM extracted exactly 5,218 barcodes from the tag and kept
+  all 42,213,220 chrM reads (dedup off, as expected for amplicon data);
+  mean_depth p50 69x, genome_coverage p50 88% — sane, unimodal.
 - `--panel-bed` scope `coverage_breadth` to targeted bases. `mean_depth` and
   `median_depth` stay whole-contig, so they remain comparable across runs.
 - `--max-strand-bias` means `|forward - reverse| / total` everywhere, single-cell

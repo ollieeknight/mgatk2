@@ -213,6 +213,7 @@ def run_pipeline_command(
         "fragment-length",
         "hybrid",
     ]
+    use_umi_dedup = dedup_mode.lower() == "umi"
 
     try:
         if not dry_run:
@@ -289,6 +290,7 @@ def run_pipeline_command(
             "n_cores": actual_cores,
             "skip_deduplication": skip_dedup,
             "use_fragment_length_dedup": use_fragment_length_dedup,
+            "use_umi_dedup": use_umi_dedup,
             "nh_max": nh_max,
             "nm_max": nm_max,
             "compute_tn5": compute_tn5,
@@ -416,6 +418,8 @@ def _log_configuration(
         dedup_display = "disabled"
     elif dedup_mode.lower() in ["alignment_and_fragment_length", "hybrid", "fragment"]:
         dedup_display = "alignment + strand + fragment length"
+    elif dedup_mode.lower() == "umi":
+        dedup_display = "UMI (UB tag), falling back to alignment + strand"
     else:
         dedup_display = "alignment + strand only"
 

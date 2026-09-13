@@ -112,6 +112,8 @@ class _Shard:
         min_dist = quality.min_distance_from_end
         dedup = not config.dedup.skip
         use_fragment_length = config.dedup.use_fragment_length
+        use_umi = config.dedup.use_umi
+        umi_tag = config.dedup.umi_tag
         index_of = self.index_of
         is_bulk = self.is_bulk
         counts = self.counts
@@ -151,9 +153,20 @@ class _Shard:
                         continue
 
                 if dedup:
-                    key = (read.reference_start << 1) | int(read.is_reverse)
-                    if use_fragment_length:
-                        key |= abs(read.template_length or 0) << 20
+                    if use_umi:
+                        umi = read.get_tag(umi_tag) if read.has_tag(umi_tag) else None
+                        # A molecule's identity is its UMI, not where it happened
+                        # to fragment; a missing tag falls back to position so
+                        # the read is still counted (not silently dropped).
+                        key = (
+                            (umi, int(read.is_reverse))
+                            if umi is not None
+                            else (read.reference_start << 1) | int(read.is_reverse)
+                        )
+                    else:
+                        key = (read.reference_start << 1) | int(read.is_reverse)
+                        if use_fragment_length:
+                            key |= abs(read.template_length or 0) << 20
                     cell_seen = seen[cell]
                     if key in cell_seen:
                         duplicates += 1

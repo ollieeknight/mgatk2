@@ -24,6 +24,8 @@ class DeduplicationConfig:
 
     skip: bool = False
     use_fragment_length: bool = True
+    use_umi: bool = False
+    umi_tag: str = "UB"
 
 
 @dataclass
@@ -149,6 +151,7 @@ class PipelineConfig:
         min_distance_from_end: int = 5,
         skip_deduplication: bool = False,
         use_fragment_length_dedup: bool = True,
+        use_umi_dedup: bool = False,
         n_cores: int = 8,
         max_memory_gb: float = 128.0,
         min_reads_per_cell: int = 1,
@@ -169,7 +172,9 @@ class PipelineConfig:
             nm_max=nm_max,
         )
         self.dedup = DeduplicationConfig(
-            skip=skip_deduplication, use_fragment_length=use_fragment_length_dedup
+            skip=skip_deduplication,
+            use_fragment_length=use_fragment_length_dedup,
+            use_umi=use_umi_dedup,
         )
         self.performance = PerformanceConfig(n_cores=n_cores, max_memory_gb=max_memory_gb)
         self.min_reads_per_cell = min_reads_per_cell
