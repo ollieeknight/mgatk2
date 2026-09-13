@@ -169,7 +169,7 @@ The reference allele table is inferred from aggregate counts across all cells.
 -e, --min-distance-from-end INT   Ignore bases this close to either read end
     --nh-max INT             Maximum NH tag; 0 disables, 1 matches mgatk [default: 0]
     --nm-max INT             Maximum NM/nM tag; 0 disables, 4 matches mgatk [default: 0]
--d, --deduplication CHOICE   alignment_and_fragment_length | alignment_start | none
+-d, --deduplication CHOICE   alignment_and_fragment_length | alignment_start | umi | none
 -f, --format CHOICE          hdf5 | txt
     --no-tn5                 Skip Tn5 cut site tracking, for RNA-seq or WGS
     --assay CHOICE           scatac | scrna | tapestri (`run` only)
@@ -202,7 +202,7 @@ explicit flag always wins, and mgatk2 warns when the two disagree.
 
 | Option | `scatac` | `scrna` | `tapestri` |
 |---|---|---|---|
-| `--deduplication` | fragment length | alignment start | none |
+| `--deduplication` | fragment length | umi | none |
 | Tn5 tracking | on | off | off |
 | `--min-distance-from-end` | 5 | 5 | 0 |
 | `--barcode-tag` | `CB` | `CB` | `RG` |
@@ -211,9 +211,11 @@ Why each differs:
 
 - **scatac** is the historical default, and the only assay where Tn5 cut sites
   mean anything.
-- **scrna** has UMIs that coordinate deduplication cannot see. Start-only is the
-  closest approximation; prefer collapsing UMIs upstream and passing
-  `--deduplication none`.
+- **scrna** collapses reads sharing a cell barcode + UMI (`UB` tag), falling
+  back to `alignment_start` per-read when the tag is absent. Measured against
+  real 10x GEX data: the old `alignment_start` default overcounted chrM depth
+  2.49x (17.8M reads where true UMI collapse gives 7.2M), because independent
+  molecules that happen to start at the same base were wrongly merged.
 - **tapestri** is amplicon data. Every molecule from one amplicon shares a start
   coordinate, so coordinate deduplication would discard nearly all of them —
   the preset forces `none`. Fixed primer starts also make end trimming remove
@@ -277,14 +279,20 @@ origin otherwise mismap onto chrM and quietly inflate heteroplasmy.
 
 ## Deduplication
 
-Three strategies are available everywhere:
+Four strategies are available on `run`, `tenx`, and `call`; `paired` offers the
+first, second, and fourth (no UMI-aware option):
 
 1. **`alignment_and_fragment_length`** (default for `run`, `call`, and `paired`):
    duplicates share alignment start, strand, *and* template length. The most
    stringent option, and the right one for paired-end data.
 2. **`alignment_start`** (default for `tenx`): duplicates share alignment start
    and strand. Close to Picard MarkDuplicates, and matches original mgatk.
-3. **`none`**: keep every otherwise eligible alignment. Use this for input that
+3. **`umi`** (default for `--assay scrna`): duplicates share a cell barcode and
+   `UB` tag value within 500bp (a 12bp UMI can collide by chance across
+   unrelated loci on a 16.6kb contig; the window bounds the collapse to
+   plausible same-molecule fragmentation). Falls back to `alignment_start`
+   per-read when the tag is absent.
+4. **`none`**: keep every otherwise eligible alignment. Use this for input that
    is already deduplicated or UMI-consensus collapsed.
 
 Deduplication is applied per cell.

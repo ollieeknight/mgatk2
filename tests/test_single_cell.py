@@ -64,6 +64,19 @@ def test_read_end_threshold_reaches_the_pipeline():
     assert config.quality.min_distance_from_end == 0
 
 
+def test_umi_dedup_flag_reaches_the_pipeline():
+    config = PipelineConfig(use_umi_dedup=True)
+
+    assert config.dedup.use_umi is True
+    assert config.dedup.umi_tag == "UB"
+
+
+def test_umi_dedup_defaults_off():
+    config = PipelineConfig()
+
+    assert config.dedup.use_umi is False
+
+
 def test_bulk_mode_skips_barcode_discovery(monkeypatch, tmp_path):
     captured = {}
 
@@ -130,6 +143,120 @@ def test_shard_counts_by_strand_and_deduplicates(barcoded_bam):
     assert result.tn5[0, 0, FWD] == 1
     assert result.tn5[0, 4, FWD] == 1
     assert result.tn5[1, 19, REV] == 1
+
+
+def test_umi_dedup_collapses_reads_sharing_a_umi_at_different_starts(tmp_path, alignment_factory):
+    """Same molecule, fragmented differently: positional dedup would miss this."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    bam = alignment_factory(
+        tmp_path / "umi_same.bam",
+        reference,
+        [
+            {"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+            {"name": "r2", "start": 3, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+        ],
+    )
+
+    result = scan_shard((str(bam), counting_config(use_umi_dedup=True), ["cell-1"], 0, None))
+
+    assert result.duplicate_reads == 1
+    assert result.n_reads.tolist() == [1]
+
+
+def test_umi_dedup_keeps_reads_sharing_a_start_with_different_umis(tmp_path, alignment_factory):
+    """Two independent molecules that happen to start at the same base.
+
+    `alignment_start` dedup would wrongly collapse these to one; this is the
+    2.49x overcount measured against real scRNA data.
+    """
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    bam = alignment_factory(
+        tmp_path / "umi_diff.bam",
+        reference,
+        [
+            {"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+            {"name": "r2", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "TTTTGGGGCCCC"}},
+        ],
+    )
+
+    result = scan_shard((str(bam), counting_config(use_umi_dedup=True), ["cell-1"], 0, None))
+
+    assert result.duplicate_reads == 0
+    assert result.n_reads.tolist() == [2]
+
+
+def test_umi_dedup_does_not_collapse_across_distant_loci(tmp_path, alignment_factory):
+    """Two independent molecules 8900bp apart that happen to share a UMI.
+
+    With a 12bp UMI space, chance collisions across the whole read population
+    of a cell are expected at chrM read depths (~75 per 50k reads/cell). A key
+    with no distance bound merges them into one observation and silently
+    drops the other.
+    """
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 16569 + "\n")
+    bam = alignment_factory(
+        tmp_path / "umi_distant.bam",
+        reference,
+        [
+            {"name": "r1", "start": 100, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+            {"name": "r2", "start": 9000, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+        ],
+    )
+
+    result = scan_shard(
+        (str(bam), counting_config(mito_length=16569, use_umi_dedup=True), ["cell-1"], 0, None)
+    )
+
+    assert result.duplicate_reads == 0
+    assert result.n_reads.tolist() == [2]
+    assert result.depth[0, 100] == 1
+    assert result.depth[0, 9000] == 1
+
+
+def test_umi_dedup_window_boundary(tmp_path, alignment_factory):
+    """Pins the exact distance bound: collapse within it, not beyond it."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 16569 + "\n")
+
+    def duplicate_reads_at(gap):
+        bam = alignment_factory(
+            tmp_path / f"umi_gap_{gap}.bam",
+            reference,
+            [
+                {"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+                {
+                    "name": "r2",
+                    "start": gap,
+                    "sequence": "ACGT" * 5,
+                    "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"},
+                },
+            ],
+        )
+        return scan_shard(
+            (str(bam), counting_config(mito_length=16569, use_umi_dedup=True), ["cell-1"], 0, None)
+        ).duplicate_reads
+
+    assert duplicate_reads_at(500) == 1
+    assert duplicate_reads_at(501) == 0
+
+
+def test_umi_dedup_falls_back_to_position_when_tag_is_missing(tmp_path, alignment_factory):
+    """A read without a UB tag must still be counted, not silently dropped."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    bam = alignment_factory(
+        tmp_path / "umi_missing.bam",
+        reference,
+        [{"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}}],
+    )
+
+    result = scan_shard((str(bam), counting_config(use_umi_dedup=True), ["cell-1"], 0, None))
+
+    assert result.n_reads.tolist() == [1]
+    assert result.duplicate_reads == 0
 
 
 def test_insertion_keeps_query_and_reference_in_register(tmp_path, alignment_factory):
@@ -443,6 +570,55 @@ def test_load_barcode_csv_accepts_every_cell_flag_spelling(tmp_path, column):
     assert metadata is not None
 
 
+@pytest.mark.parametrize("command", ["run", "tenx", "call"])
+def test_umi_deduplication_choice_is_accepted(command, monkeypatch, tmp_path):
+    """--deduplication umi must parse on every single-cell command."""
+    command_module = importlib.import_module(f"cli.commands.{command}")
+    monkeypatch.setattr(command_module, "run_pipeline_command", lambda **kwargs: 0)
+    if command == "call":
+        (tmp_path / "sample.bam").touch()
+
+    result = CliRunner().invoke(
+        getattr(command_module, command),
+        [
+            "--input",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "output"),
+            "--deduplication",
+            "umi",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_deduplication_umi_forwards_use_umi_dedup(monkeypatch, tmp_path):
+    command_module = importlib.import_module("cli.commands.run")
+    (tmp_path / "sample.bam").touch()
+    calls = []
+    monkeypatch.setattr(
+        command_module,
+        "run_pipeline_command",
+        lambda **kwargs: calls.append(kwargs) or 0,
+    )
+
+    result = CliRunner().invoke(
+        command_module.run,
+        [
+            "--input",
+            str(tmp_path / "sample.bam"),
+            "--output",
+            str(tmp_path / "output"),
+            "--deduplication",
+            "umi",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["dedup_mode"] == "umi"
+
+
 def test_call_forwards_no_tn5(monkeypatch, tmp_path):
     command_module = importlib.import_module("cli.commands.call")
     (tmp_path / "sample.bam").touch()
@@ -654,6 +830,11 @@ def test_call_reports_a_failing_sample(monkeypatch, tmp_path):
 def test_tapestri_preset_disables_coordinate_deduplication():
     """Amplicon reads share start coordinates, so coordinate dedup must be off."""
     assert ASSAY_PRESETS["tapestri"]["dedup_mode"] == "none"
+
+
+def test_scrna_preset_uses_umi_deduplication():
+    """Measured against real data: alignment_start overcounts scRNA depth 2.49x."""
+    assert ASSAY_PRESETS["scrna"]["dedup_mode"] == "umi"
 
 
 def test_assay_preset_fills_options_the_user_did_not_set():

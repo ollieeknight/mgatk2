@@ -25,6 +25,16 @@ for _char, _idx in (("A", 0), ("C", 1), ("G", 2), ("T", 3)):
 # Reused so the hot loop never allocates a position vector.
 _POSITIONS = np.arange(1 << 16, dtype=np.int32)
 
+# ponytail: a UMI's identity alone isn't a safe dedup key on a 16.6kb contig --
+# two independent molecules can share a 12bp UMI by chance (~75 collisions per
+# 50k reads/cell). Bound the collapse to reads within this many bases of the
+# last-kept read sharing that UMI + strand, chaining forward through a BAM
+# sorted by coordinate. 500bp comfortably covers 10x 3' fragment sizes while
+# staying far short of typical inter-locus separation. Upgrade path: a real
+# fragment-size estimate per library, or gene-aware boundaries, if this proves
+# too coarse.
+UMI_DEDUP_WINDOW = 500
+
 CIGAR_MATCH = (0, 7, 8)
 CIGAR_REF_ONLY = (2, 3)
 CIGAR_QUERY_ONLY = (1, 4)
@@ -112,6 +122,8 @@ class _Shard:
         min_dist = quality.min_distance_from_end
         dedup = not config.dedup.skip
         use_fragment_length = config.dedup.use_fragment_length
+        use_umi = config.dedup.use_umi
+        umi_tag = config.dedup.umi_tag
         index_of = self.index_of
         is_bulk = self.is_bulk
         counts = self.counts
@@ -119,6 +131,7 @@ class _Shard:
         n_reads = self.n_reads
         n_paired = self.n_paired
         seen: list[set] = [set() for _ in range(self.n_cells)] if dedup else []
+        umi_last: list[dict] = [{} for _ in range(self.n_cells)] if dedup and use_umi else []
 
         total_reads = 0
         duplicates = 0
@@ -151,14 +164,41 @@ class _Shard:
                         continue
 
                 if dedup:
-                    key = (read.reference_start << 1) | int(read.is_reverse)
-                    if use_fragment_length:
-                        key |= abs(read.template_length or 0) << 20
-                    cell_seen = seen[cell]
-                    if key in cell_seen:
-                        duplicates += 1
-                        continue
-                    cell_seen.add(key)
+                    if use_umi:
+                        umi = read.get_tag(umi_tag) if read.has_tag(umi_tag) else None
+                        if umi is None:
+                            # A missing tag falls back to position so the read
+                            # is still counted (not silently dropped).
+                            key = (read.reference_start << 1) | int(read.is_reverse)
+                            cell_seen = seen[cell]
+                            if key in cell_seen:
+                                duplicates += 1
+                                continue
+                            cell_seen.add(key)
+                        else:
+                            # A shared UMI alone isn't a safe key on a 16.6kb
+                            # contig -- bound the collapse to nearby reads.
+                            # bam.fetch is coordinate-sorted, so reference_start
+                            # is non-decreasing within this chain.
+                            chain_key = (umi, int(read.is_reverse))
+                            chain = umi_last[cell]
+                            last_start = chain.get(chain_key)
+                            if (
+                                last_start is not None
+                                and read.reference_start - last_start <= UMI_DEDUP_WINDOW
+                            ):
+                                duplicates += 1
+                                continue
+                            chain[chain_key] = read.reference_start
+                    else:
+                        key = (read.reference_start << 1) | int(read.is_reverse)
+                        if use_fragment_length:
+                            key |= abs(read.template_length or 0) << 20
+                        cell_seen = seen[cell]
+                        if key in cell_seen:
+                            duplicates += 1
+                            continue
+                        cell_seen.add(key)
 
                 if read.mapping_quality < min_mapq:
                     continue
