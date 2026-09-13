@@ -164,7 +164,10 @@ class _Shard:
                     continue
 
                 sequence = read.query_sequence
-                if not sequence:
+                # No CIGAR means no aligned span: reference_end is None and the
+                # read contributes neither bases nor a Tn5 cut site.
+                cigar = read.cigartuples
+                if not sequence or not cigar:
                     continue
 
                 # Counted only once the read is certain to contribute bases, so
@@ -195,7 +198,7 @@ class _Shard:
                     bases,
                     quals,
                     read.reference_start,
-                    read.cigartuples or [],
+                    cigar,
                     read_length,
                     strand,
                     min_baseq,
@@ -275,8 +278,22 @@ class _Shard:
                 self.tn5[~kept] = 0
 
         depth = self.counts.sum(axis=(2, 3), dtype=np.int64)
-        positions_covered = (depth > 0).sum(axis=1)
+        covered = depth > 0
         total_bases = depth.sum(axis=1)
+        # Depth statistics stay whole-contig so they stay comparable across
+        # runs; only breadth is scoped to the panel.
+        positions_covered = covered.sum(axis=1)
+
+        panel = self.config.panel_positions
+        if panel:
+            targeted = np.zeros(length, dtype=bool)
+            index = np.fromiter(panel, dtype=np.int64, count=len(panel)) - 1
+            targeted[index[(index >= 0) & (index < length)]] = True
+            breadth_covered = (covered & targeted).sum(axis=1)
+            breadth_denominator = max(1, int(targeted.sum()))
+        else:
+            breadth_covered = positions_covered
+            breadth_denominator = length
 
         # Depth statistics ignore uncovered positions, matching mgatk2 <= 1.2.
         covered_only = depth.astype(np.float32)
@@ -308,7 +325,7 @@ class _Shard:
             median_depth=median_depth,
             max_depth=np.minimum(depth.max(axis=1), 65535).astype(np.uint16),
             total_bases=total_bases,
-            coverage_breadth=positions_covered / length,
+            coverage_breadth=breadth_covered / breadth_denominator,
             kept=kept,
             total_reads=total_reads,
             duplicate_reads=duplicates,

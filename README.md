@@ -172,6 +172,8 @@ The reference allele table is inferred from aggregate counts across all cells.
 -d, --deduplication CHOICE   alignment_and_fragment_length | alignment_start | none
 -f, --format CHOICE          hdf5 | txt
     --no-tn5                 Skip Tn5 cut site tracking, for RNA-seq or WGS
+    --assay CHOICE           scatac | scrna | tapestri (`run` only)
+    --panel-bed FILE         Amplicon panel BED; scopes coverage breadth (`run` only)
 -v, --verbose                Verbose logging
     --dry-run                Validate and exit without processing
 ```
@@ -191,6 +193,46 @@ The defaults that differ between the presets:
 | `--min-distance-from-end` | 5 | 0 | 5 |
 | `--deduplication` | fragment length | alignment start | fragment length |
 | `--format` | hdf5 | txt | hdf5 |
+
+### Assays
+
+`--assay` sets the options that depend on the chemistry, so you do not have to
+remember which ones matter. It only fills options you left at their default; an
+explicit flag always wins, and mgatk2 warns when the two disagree.
+
+| Option | `scatac` | `scrna` | `tapestri` |
+|---|---|---|---|
+| `--deduplication` | fragment length | alignment start | none |
+| Tn5 tracking | on | off | off |
+| `--min-distance-from-end` | 5 | 5 | 0 |
+| `--barcode-tag` | `CB` | `CB` | `RG` |
+
+Why each differs:
+
+- **scatac** is the historical default, and the only assay where Tn5 cut sites
+  mean anything.
+- **scrna** has UMIs that coordinate deduplication cannot see. Start-only is the
+  closest approximation; prefer collapsing UMIs upstream and passing
+  `--deduplication none`.
+- **tapestri** is amplicon data. Every molecule from one amplicon shares a start
+  coordinate, so coordinate deduplication would discard nearly all of them —
+  the preset forces `none`. Fixed primer starts also make end trimming remove
+  the same bases from every read, so it is disabled. Barcodes come from the read
+  group rather than a `CB` tag.
+
+For a targeted panel, pass `--panel-bed` so coverage breadth is reported against
+the bases the panel actually targets rather than all 16,569:
+
+```bash
+mgatk2 run \
+  --input tapestri.bam \
+  --output mgatk2_out \
+  --assay tapestri \
+  --panel-bed panel.bed
+```
+
+Depth statistics stay whole-contig, so they remain comparable with runs that
+used no panel.
 
 ### `mgatk2 paired`
 

@@ -90,6 +90,23 @@ def _find_barcode_file(directory: Path) -> str | None:
     return None
 
 
+def load_panel_positions(panel_bed: str, mito_chr: str) -> frozenset[int]:
+    """1-based targeted positions from an amplicon panel BED.
+
+    Shares the blacklist BED reader, which already handles the 0-based
+    half-open to 1-based inclusive conversion and filters to one contig.
+    """
+    from data.blacklists import load_blacklist_positions
+
+    positions = load_blacklist_positions(build="none", custom_bed=panel_bed, mito_chr=mito_chr)
+    if not positions:
+        raise InvalidInputError(
+            f"Panel BED {panel_bed} defines no positions on {mito_chr}; "
+            "check the contig name in column 1"
+        )
+    return frozenset(positions)
+
+
 def check_alignment(path: str, mito_chr: str, reference_filename: str | None = None) -> None:
     """Open an alignment and confirm it can supply the requested contig.
 
@@ -169,6 +186,8 @@ def run_pipeline_command(
     nh_max=0,
     nm_max=0,
     compute_tn5=True,
+    assay=None,
+    panel_bed=None,
     original_bam_path=None,
     report_title=None,
     report_subtitle=None,
@@ -273,6 +292,10 @@ def run_pipeline_command(
             "nh_max": nh_max,
             "nm_max": nm_max,
             "compute_tn5": compute_tn5,
+            "assay": assay,
+            "panel_positions": (
+                load_panel_positions(panel_bed, mito_chr) if panel_bed else None
+            ),
             "report_title": report_title,
             "report_subtitle": report_subtitle,
             "working_directory": working_directory,

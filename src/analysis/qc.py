@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 class QCCalculator:
     """Calculate quality control metrics for mtDNA sequencing"""
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig, assay: str | None = None):
         self.config = config
+        self.assay = assay
 
     def collect_run_metadata(
         self, bam_path: str, output_dir: str, n_cells_input: int, n_cells_passed: int
@@ -41,6 +42,11 @@ class QCCalculator:
                 "skip_deduplication": self.config.dedup.skip,
                 "use_fragment_length_dedup": self.config.dedup.use_fragment_length,
                 "barcode_tag": self.config.barcode_tag,
+                "assay": self.assay,
+                # Size only: the full position set is recoverable from the BED.
+                "panel_positions": (
+                    len(self.config.panel_positions) if self.config.panel_positions else 0
+                ),
                 "mito_chr": self.config.mito_chr,
                 "n_cores": self.config.performance.n_cores,
                 "max_memory_gb": self.config.performance.max_memory_gb,

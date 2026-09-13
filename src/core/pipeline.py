@@ -29,6 +29,7 @@ class MtDNAPipeline:
         config: PipelineConfig | None = None,
         output_format: str = "standard",
         barcode_metadata=None,
+        assay=None,
         sample_name: str = "mgatk2",
         report_title: str | None = None,
         report_subtitle: str | None = None,
@@ -41,6 +42,7 @@ class MtDNAPipeline:
         self.config = config or PipelineConfig()
         self.output_format = output_format.lower()
         self.barcode_metadata = barcode_metadata
+        self.assay = assay
         self.sample_name = sample_name
         self.report_title = report_title or sample_name
         self.report_subtitle = report_subtitle or "mgatk2 output analysis"
@@ -52,6 +54,18 @@ class MtDNAPipeline:
         ensure_alignment_index(str(self.bam_path))
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def wants_tn5_report(barcode_metadata, assay) -> bool:
+        """Whether the QC report should centre on Tn5 transposition.
+
+        A declared assay decides directly. Without one, fall back to the
+        historical inference: barcode metadata only comes from a 10x scATAC
+        singlecell.csv, so its presence implies ATAC.
+        """
+        if assay is not None:
+            return assay == "scatac"
+        return barcode_metadata is not None
 
     def run(self) -> dict[str, Any]:
         start_time = time.time()
@@ -93,7 +107,7 @@ class MtDNAPipeline:
         qc_dir = self.output_dir / "qc"
         writer.finalize(qc_dir)
 
-        run_metadata = QCCalculator(self.config).collect_run_metadata(
+        run_metadata = QCCalculator(self.config, assay=self.assay).collect_run_metadata(
             str(self.bam_path),
             str(self.output_dir),
             n_cells_input,
@@ -107,9 +121,7 @@ class MtDNAPipeline:
         if self.output_format == "hdf5" and self.barcode_list != ["bulk"]:
             logger.info("Generating HTML QC report...")
             try:
-                if self.barcode_metadata is not None:
-                    # Barcode metadata only comes from a 10x scATAC singlecell.csv,
-                    # so its presence is what selects the Tn5 report.
+                if self.wants_tn5_report(self.barcode_metadata, self.assay):
                     from analysis.report import generate_html_report
 
                     generate_html_report(
@@ -121,8 +133,6 @@ class MtDNAPipeline:
                         input_dir=str(self.bam_path.parent),
                     )
                 else:
-                    # No metadata means scRNA input, where read start sites
-                    # replace the Tn5 plot.
                     from analysis.report import generate_scrna_html_report
 
                     generate_scrna_html_report(
@@ -175,6 +185,8 @@ def run_pipeline(
     nh_max: int = 0,
     nm_max: int = 0,
     compute_tn5: bool = True,
+    assay: str | None = None,
+    panel_positions: frozenset[int] | None = None,
     barcode_tag: str = "CB",
     min_barcode_reads: int = 1,
     mito_chr: str = "chrM",
@@ -225,6 +237,7 @@ def run_pipeline(
         min_reads_per_cell=min_reads_per_cell,
         barcode_tag=barcode_tag,
         mito_chr=mito_chr,
+        panel_positions=panel_positions,
     )
 
     pipeline = MtDNAPipeline(
@@ -234,6 +247,7 @@ def run_pipeline(
         config=config,
         output_format=output_format,
         barcode_metadata=barcode_metadata,
+        assay=assay,
         sample_name=sample_name,
         report_title=report_title,
         report_subtitle=report_subtitle,

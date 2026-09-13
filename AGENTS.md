@@ -64,6 +64,15 @@ in `processing/` or `file_io/writers.py`.
   outermost aligned reference base. Cut totals must equal retained read count,
   so `n_reads`/`n_paired` increment only after the MAPQ and missing-sequence
   filters. Disable with `--no-tn5` on `run`, `tenx`, or `call`.
+- `--assay` (on `run` only) fill options user left at default; explicit flag
+  always win, warn when the two disagree. Preset set existing options only —
+  counting kernel stay assay-blind. Table `ASSAY_PRESETS` in `cli/options.py`.
+- Tapestri = amplicon: every molecule of one amplicon share a start coordinate,
+  so coordinate deduplication collapse whole amplicon to one read per cell.
+  `tapestri` preset therefore force `none`. `tests/test_single_cell.py` pin both
+  the preset and the destruction it prevent.
+- `--panel-bed` scope `coverage_breadth` to targeted bases. `mean_depth` and
+  `median_depth` stay whole-contig, so they remain comparable across runs.
 - `--max-strand-bias` means `|forward - reverse| / total` everywhere, single-cell
   and paired. Single-cell default `1.0` = no-op.
 - `mean_depth` and `median_depth` average over covered positions only — historic,
@@ -71,6 +80,9 @@ in `processing/` or `file_io/writers.py`.
 - HDF5 matrices stored positions × cells; `hdf5r` read transposed cells ×
   positions shape in R.
 - Single-cell reference allele inferred from aggregate counts.
+- QC report choice go through `MtDNAPipeline.wants_tn5_report`. `--assay` decide
+  directly; without it, fall back to historic inference (barcode metadata come
+  only from a 10x scATAC `singlecell.csv`).
 
 ## Paired invariants
 
@@ -132,8 +144,9 @@ panel of normals, no contamination estimate, no germline prior. Do not add
 them; feed Mutect2/Strelka2/DeepSomatic instead.
 
 `wes` command stay removed: was `paired` plus forced
-`--deduplication none --input-is-consensus`. No reinstate assay-specific alias;
-add options to `paired` instead.
+`--deduplication none --input-is-consensus`. Assay handling belong in options,
+never a command alias — `--assay` on `run` is the sanctioned shape; a per-assay
+command is not.
 
 Panel of normals rejected on arithmetic, not effort. chrM = 16,569 bp, and at
 1,000x depth with Q30 error every site/allele carry >=1 alt read in 63% of

@@ -158,6 +158,7 @@ class PipelineConfig:
         nh_max: int = 0,
         nm_max: int = 0,
         compute_tn5: bool = True,
+        panel_positions: frozenset[int] | None = None,
     ):
         self.quality = QualityThresholds(
             min_baseq=min_baseq,
@@ -176,6 +177,10 @@ class PipelineConfig:
         self.mito_chr = mito_chr
         self.mito_length = mito_length
         self.compute_tn5 = compute_tn5
+        # 1-based targeted positions for an amplicon panel. Coverage breadth is
+        # reported against these, because a base a panel never targets has not
+        # failed to be covered.
+        self.panel_positions = panel_positions
 
     # uint32 base counts (4 bases x 2 strands) plus uint32 Tn5 cuts (2 strands).
     def bytes_per_cell(self) -> int:

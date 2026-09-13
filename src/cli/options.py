@@ -1,6 +1,10 @@
 """CLI options and decorators for mgatk2."""
 
+import logging
+
 import click
+
+logger = logging.getLogger(__name__)
 
 
 def _paired_quality_options(f):
@@ -211,6 +215,69 @@ _PRESETS = {
 }
 
 
+# Assay presets sit between the command preset and the user's explicit flags:
+# command preset -> assay preset -> explicit flag. They only ever set options
+# that already exist, so the counting kernel stays assay-blind.
+ASSAY_PRESETS: dict[str, dict] = {
+    "scatac": {
+        "dedup_mode": "alignment_and_fragment_length",
+        "compute_tn5": True,
+        "min_distance_from_end": 5,
+        "barcode_tag": "CB",
+    },
+    "scrna": {
+        # Coordinate deduplication cannot see UMIs; start-only is the closest
+        # approximation available. Prefer UMI-consensus input with -d none.
+        "dedup_mode": "alignment_start",
+        "compute_tn5": False,
+        "min_distance_from_end": 5,
+        "barcode_tag": "CB",
+    },
+    "tapestri": {
+        # Amplicon reads share start coordinates by construction, so coordinate
+        # deduplication collapses a whole amplicon to one read per cell.
+        "dedup_mode": "none",
+        "compute_tn5": False,
+        # Fixed primer starts mean end-trimming removes the same bases from
+        # every molecule, blanking amplicon edges rather than random artefacts.
+        "min_distance_from_end": 0,
+        # Tapestri emits one read group per cell rather than a CB tag.
+        "barcode_tag": "RG",
+    },
+}
+
+
+# Option names differ from their flags where the flag reads better.
+_FLAG_NAMES = {"dedup_mode": "--deduplication", "compute_tn5": "--no-tn5"}
+
+
+def apply_assay_preset(assay: str | None, values: dict, explicit: set[str]) -> dict:
+    """Fill options the user did not set from the assay preset.
+
+    An explicit flag always wins, because the user may know something the
+    preset does not. It warns first when the two disagree, since for an
+    amplicon panel the wrong deduplication mode silently discards most reads.
+    """
+    if not assay:
+        return values
+
+    resolved = dict(values)
+    for name, preset_value in ASSAY_PRESETS[assay].items():
+        if name not in resolved:
+            continue
+        if name not in explicit:
+            resolved[name] = preset_value
+        elif resolved[name] != preset_value:
+            logger.warning(
+                "--assay %s expects %s %s, but %s was given explicitly; honouring the flag.",
+                assay,
+                _FLAG_NAMES.get(name, f"--{name.replace('_', '-')}"),
+                preset_value,
+                resolved[name],
+            )
+    return resolved
+
+
 def singlecell_options(preset: str):
     """Build the shared single-cell option surface for one command preset.
 
@@ -280,6 +347,29 @@ def singlecell_options(preset: str):
                 help=(
                     "Minimum reads per barcode when auto-detecting from BAM. "
                     "Ignored when --barcodes is supplied or a 10x barcode file is found."
+                ),
+            ),
+        ]
+
+    if preset == "run":
+        options += [
+            click.option(
+                "--assay",
+                type=click.Choice(sorted(ASSAY_PRESETS), case_sensitive=False),
+                default=None,
+                help=(
+                    "Sequencing assay. Sets deduplication, Tn5 tracking, end trimming, "
+                    "and the barcode tag to suit the chemistry. Explicit flags still win."
+                ),
+            ),
+            click.option(
+                "--panel-bed",
+                "panel_bed",
+                default=None,
+                type=click.Path(exists=True, dir_okay=False),
+                help=(
+                    "Amplicon panel BED. Coverage breadth is reported against the "
+                    "targeted bases rather than the whole contig."
                 ),
             ),
         ]

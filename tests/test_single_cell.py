@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
-from cli.utils import auto_detect_10x_structure, setup_file_logging
+from cli.options import ASSAY_PRESETS, apply_assay_preset
+from cli.utils import auto_detect_10x_structure, load_panel_positions, setup_file_logging
 from core.config import PipelineConfig
 from core.exceptions import InvalidInputError, NoBarcodeTagsError
 from core.pipeline import run_pipeline
@@ -153,6 +154,35 @@ def test_insertion_keeps_query_and_reference_in_register(tmp_path, alignment_fac
     assert result.counts[0, :5, A, FWD].tolist() == [1] * 5
     assert result.counts[0, 5:10, C, FWD].tolist() == [1] * 5
     assert result.counts[0, :, T, :].sum() == 0
+
+
+def test_read_without_cigar_is_skipped(tmp_path, alignment_factory):
+    """A placed read with no CIGAR has no aligned span, so it must not be counted."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    bam = alignment_factory(
+        tmp_path / "nocigar.bam",
+        reference,
+        [
+            {"name": "aligned", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}},
+            # Mapped, but CIGAR is absent: reference_end is None.
+            {
+                "name": "nocigar",
+                "start": 10,
+                "sequence": "A" * 20,
+                "cigar": None,
+                "flag": 16,
+                "tags": {"CB": "cell-1"},
+            },
+        ],
+    )
+
+    result = scan_shard((str(bam), counting_config(), ["cell-1"], 0, None))
+
+    # Only the genuinely aligned read contributes a read, bases, and a cut site.
+    assert result.n_reads.tolist() == [1]
+    assert result.counts[0].sum() == 20
+    assert result.tn5[0, :, REV].sum() == 0
 
 
 def test_min_distance_from_end_trims_both_read_ends(barcoded_bam):
@@ -619,3 +649,230 @@ def test_call_reports_a_failing_sample(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+def test_tapestri_preset_disables_coordinate_deduplication():
+    """Amplicon reads share start coordinates, so coordinate dedup must be off."""
+    assert ASSAY_PRESETS["tapestri"]["dedup_mode"] == "none"
+
+
+def test_assay_preset_fills_options_the_user_did_not_set():
+    resolved = apply_assay_preset(
+        "tapestri",
+        {"dedup_mode": "alignment_start", "barcode_tag": "CB", "compute_tn5": True},
+        explicit=set(),
+    )
+
+    assert resolved["dedup_mode"] == "none"
+    assert resolved["barcode_tag"] == "RG"
+    assert resolved["compute_tn5"] is False
+
+
+def test_explicit_flag_overrides_assay_preset_with_a_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = apply_assay_preset(
+            "tapestri",
+            {"dedup_mode": "alignment_start"},
+            explicit={"dedup_mode"},
+        )
+
+    assert resolved["dedup_mode"] == "alignment_start"
+    assert "tapestri" in caplog.text
+
+
+def test_no_assay_leaves_every_option_untouched():
+    values = {"dedup_mode": "alignment_start", "barcode_tag": "CB"}
+
+    assert apply_assay_preset(None, values, explicit=set()) == values
+
+
+def test_panel_bed_scopes_coverage_breadth_to_targeted_bases(tmp_path, alignment_factory):
+    """A panel only targets part of chrM, so untargeted bases are not misses."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    bam = alignment_factory(
+        tmp_path / "panel.bam",
+        reference,
+        [{"name": "amp", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}}],
+    )
+    # The read covers positions 1-20; the panel targets exactly those.
+    panel = tmp_path / "panel.bed"
+    panel.write_text("chrM\t0\t20\n")
+
+    config = counting_config(panel_positions=load_panel_positions(str(panel), "chrM"))
+    result = scan_shard((str(bam), config, ["cell-1"], 0, None))
+
+    # 20 of 20 targeted bases covered, rather than 20 of the full 40.
+    assert result.coverage_breadth[0] == pytest.approx(1.0)
+
+
+def test_coverage_breadth_uses_whole_contig_without_a_panel(barcoded_bam):
+    result = scan_shard((str(barcoded_bam), counting_config(), ["cell-2"], 0, None))
+
+    # cell-2 covers 20 bases of the 40bp test contig.
+    assert result.coverage_breadth[0] == pytest.approx(0.5)
+
+
+def test_panel_positions_are_one_based_inclusive(tmp_path):
+    bed = tmp_path / "p.bed"
+    bed.write_text("chrM\t0\t3\nchrOther\t0\t99\n")
+
+    # BED is 0-based half-open [0,3); only chrM rows count.
+    assert load_panel_positions(str(bed), "chrM") == frozenset({1, 2, 3})
+
+
+@pytest.fixture
+def amplicon_bam(tmp_path, alignment_factory):
+    """One Tapestri-style amplicon: 30 molecules sharing a start coordinate."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    reads = [
+        {
+            "name": f"mol{i}",
+            "start": 5,
+            "sequence": "ACGT" * 5,
+            "template_length": 20,
+            "tags": {"RG": "cell-1"},
+        }
+        for i in range(30)
+    ]
+    return alignment_factory(tmp_path / "amplicon.bam", reference, reads)
+
+
+def test_tapestri_preset_keeps_every_amplicon_molecule(amplicon_bam):
+    """Coordinate dedup would collapse this amplicon to a single read."""
+    resolved = apply_assay_preset(
+        "tapestri", {"dedup_mode": "alignment_and_fragment_length"}, explicit=set()
+    )
+    config = counting_config(
+        barcode_tag="RG",
+        skip_deduplication=resolved["dedup_mode"] == "none",
+    )
+
+    result = scan_shard((str(amplicon_bam), config, ["cell-1"], 0, None))
+
+    assert int(result.n_reads[0]) == 30
+    assert result.duplicate_reads == 0
+
+
+def test_coordinate_dedup_would_destroy_amplicon_data(amplicon_bam):
+    """Guards the reason the tapestri preset exists."""
+    config = counting_config(barcode_tag="RG", skip_deduplication=False)
+
+    result = scan_shard((str(amplicon_bam), config, ["cell-1"], 0, None))
+
+    assert int(result.n_reads[0]) == 1
+    assert result.duplicate_reads == 29
+
+
+def test_barcodes_are_discovered_from_the_read_group_tag(amplicon_bam):
+    from file_io.barcode_extraction import extract_barcodes_from_bam
+
+    barcodes = extract_barcodes_from_bam(
+        str(amplicon_bam), barcode_tag="RG", mito_chr="chrM", min_reads=1
+    )
+
+    assert barcodes == ["cell-1"]
+
+
+def test_run_exposes_assay_and_panel_bed():
+    from cli import cli
+
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert "--assay" in result.output
+    assert "--panel-bed" in result.output
+    assert "tapestri" in result.output
+
+
+@pytest.mark.parametrize("command", ["tenx", "call"])
+def test_assay_is_scoped_to_run(command):
+    """tenx keeps mgatk-compatible defaults; call is a bulk per-BAM path."""
+    from cli import cli
+
+    result = CliRunner().invoke(cli, [command, "--help"])
+
+    assert "--assay" not in result.output
+
+
+def test_run_passes_assay_resolved_options_to_the_pipeline(monkeypatch, tmp_path):
+    command_module = importlib.import_module("cli.commands.run")
+    captured = {}
+    monkeypatch.setattr(
+        command_module, "run_pipeline_command", lambda **kwargs: captured.update(kwargs) or 0
+    )
+    bam = tmp_path / "in.bam"
+    bam.touch()
+
+    result = CliRunner().invoke(
+        command_module.run,
+        ["--input", str(bam), "--output", str(tmp_path / "out"), "--assay", "tapestri"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["dedup_mode"] == "none"
+    assert captured["barcode_tag"] == "RG"
+    assert captured["compute_tn5"] is False
+    assert captured["min_distance_from_end"] == 0
+
+
+def test_assay_run_reaches_the_pipeline_without_mocking_the_command(tmp_path, amplicon_bam):
+    """Guards the wiring a mocked run_pipeline_command cannot see."""
+    from cli import cli
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "run",
+            "--input",
+            str(amplicon_bam),
+            "--output",
+            str(tmp_path / "out"),
+            "--assay",
+            "tapestri",
+            "--threads",
+            "1",
+            "--min-barcode-reads",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_assay_selects_the_report_instead_of_inferring_it():
+    """A tapestri run has no transposition to plot, even beside a singlecell.csv."""
+    from core.pipeline import MtDNAPipeline
+
+    # Metadata present would otherwise select the Tn5 report.
+    assert MtDNAPipeline.wants_tn5_report(barcode_metadata={"a": 1}, assay="tapestri") is False
+    assert MtDNAPipeline.wants_tn5_report(barcode_metadata={"a": 1}, assay="scrna") is False
+    assert MtDNAPipeline.wants_tn5_report(barcode_metadata={"a": 1}, assay="scatac") is True
+
+
+def test_report_selection_falls_back_to_inference_without_an_assay():
+    """Unchanged behaviour when --assay is not given."""
+    from core.pipeline import MtDNAPipeline
+
+    assert MtDNAPipeline.wants_tn5_report(barcode_metadata={"a": 1}, assay=None) is True
+    assert MtDNAPipeline.wants_tn5_report(barcode_metadata=None, assay=None) is False
+
+
+def test_run_config_records_the_assay_and_panel():
+    """A run must be reproducible from its recorded parameters."""
+    from analysis.qc import QCCalculator
+
+    config = PipelineConfig(panel_positions=frozenset({1, 2, 3}))
+    metadata = QCCalculator(config, assay="tapestri").collect_run_metadata("in.bam", "out", 1, 1)
+
+    assert metadata["parameters"]["assay"] == "tapestri"
+    assert metadata["parameters"]["panel_positions"] == 3
+
+
+def test_conflict_warning_names_the_real_flag(caplog):
+    """A warning naming a flag that does not exist is worse than none."""
+    with caplog.at_level(logging.WARNING):
+        apply_assay_preset("tapestri", {"dedup_mode": "alignment_start"}, explicit={"dedup_mode"})
+
+    assert "--deduplication" in caplog.text
+    assert "--dedup-mode" not in caplog.text
