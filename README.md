@@ -288,8 +288,10 @@ first, second, and fourth (no UMI-aware option):
 2. **`alignment_start`** (default for `tenx`): duplicates share alignment start
    and strand. Close to Picard MarkDuplicates, and matches original mgatk.
 3. **`umi`** (default for `--assay scrna`): duplicates share a cell barcode and
-   `UB` tag value, regardless of where the read starts. Falls back to
-   `alignment_start` per-read when the tag is absent.
+   `UB` tag value within 500bp (a 12bp UMI can collide by chance across
+   unrelated loci on a 16.6kb contig; the window bounds the collapse to
+   plausible same-molecule fragmentation). Falls back to `alignment_start`
+   per-read when the tag is absent.
 4. **`none`**: keep every otherwise eligible alignment. Use this for input that
    is already deduplicated or UMI-consensus collapsed.
 

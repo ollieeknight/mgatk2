@@ -57,7 +57,13 @@ in `processing/` or `file_io/writers.py`.
 - `tenx` default Signac-compatible text + alignment-start deduplication.
 - `call` treat every BAM in its input directory as one bulk sample.
 - Deduplication per cell, keyed on alignment start, strand, optionally template
-  length, or — `umi` mode — cell barcode + `UB` tag value instead of position.
+  length, or — `umi` mode — cell barcode + `UB` tag, chained forward through
+  the coordinate-sorted stream and bounded to `UMI_DEDUP_WINDOW` (500bp,
+  `processing/pileup.py`). UMI alone is not a safe key on a 16.6kb contig:
+  two unrelated molecules can share a 12bp UMI by chance, and an unbounded key
+  collapsed them into one observation, silently dropping the other (found on
+  a synthetic two-read case, positions 100 and 9000 apart, before this
+  shipped — 53,314 reads recovered on the same real 10x run once bounded).
   `umi` falls back to the alignment-start key per-read when `UB` is absent, so
   a read is never silently dropped for lacking the tag.
 - `scrna` preset uses `umi` dedup, not `alignment_start`. Measured against real

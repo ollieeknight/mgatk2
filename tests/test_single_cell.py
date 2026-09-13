@@ -187,6 +187,62 @@ def test_umi_dedup_keeps_reads_sharing_a_start_with_different_umis(tmp_path, ali
     assert result.n_reads.tolist() == [2]
 
 
+def test_umi_dedup_does_not_collapse_across_distant_loci(tmp_path, alignment_factory):
+    """Two independent molecules 8900bp apart that happen to share a UMI.
+
+    With a 12bp UMI space, chance collisions across the whole read population
+    of a cell are expected at chrM read depths (~75 per 50k reads/cell). A key
+    with no distance bound merges them into one observation and silently
+    drops the other.
+    """
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 16569 + "\n")
+    bam = alignment_factory(
+        tmp_path / "umi_distant.bam",
+        reference,
+        [
+            {"name": "r1", "start": 100, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+            {"name": "r2", "start": 9000, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+        ],
+    )
+
+    result = scan_shard(
+        (str(bam), counting_config(mito_length=16569, use_umi_dedup=True), ["cell-1"], 0, None)
+    )
+
+    assert result.duplicate_reads == 0
+    assert result.n_reads.tolist() == [2]
+    assert result.depth[0, 100] == 1
+    assert result.depth[0, 9000] == 1
+
+
+def test_umi_dedup_window_boundary(tmp_path, alignment_factory):
+    """Pins the exact distance bound: collapse within it, not beyond it."""
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 16569 + "\n")
+
+    def duplicate_reads_at(gap):
+        bam = alignment_factory(
+            tmp_path / f"umi_gap_{gap}.bam",
+            reference,
+            [
+                {"name": "r1", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"}},
+                {
+                    "name": "r2",
+                    "start": gap,
+                    "sequence": "ACGT" * 5,
+                    "tags": {"CB": "cell-1", "UB": "AAAACCCCGGGG"},
+                },
+            ],
+        )
+        return scan_shard(
+            (str(bam), counting_config(mito_length=16569, use_umi_dedup=True), ["cell-1"], 0, None)
+        ).duplicate_reads
+
+    assert duplicate_reads_at(500) == 1
+    assert duplicate_reads_at(501) == 0
+
+
 def test_umi_dedup_falls_back_to_position_when_tag_is_missing(tmp_path, alignment_factory):
     """A read without a UB tag must still be counted, not silently dropped."""
     reference = tmp_path / "reference.fa"
