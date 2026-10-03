@@ -220,9 +220,9 @@ ASSAY_PRESETS: dict[str, dict] = {
         "barcode_tag": "CB",
     },
     "scrna": {
-        # Coordinate deduplication cannot see UMIs; start-only is the closest
-        # approximation available. Prefer UMI-consensus input with -d none.
-        "dedup_mode": "alignment_start",
+        # Measured on real 10x GEX chrM: alignment_start kept 17.8M reads where
+        # (CB, UMI) collapse gives 7.2M, merging molecules that share a start.
+        "dedup_mode": "umi",
         "compute_tn5": False,
         "min_distance_from_end": 5,
         "barcode_tag": "CB",
@@ -471,10 +471,16 @@ def singlecell_options(preset: str):
             "--deduplication",
             "-d",
             "dedup_mode",
-            type=_DEDUP_CHOICE,
+            type=click.Choice(
+                ["alignment_and_fragment_length", "alignment_start", "umi", "none"],
+                case_sensitive=False,
+            ),
             default=defaults["dedup_mode"],
             show_default=True,
-            help="Deduplication strategy",
+            help=(
+                "Deduplication strategy. umi collapses reads sharing a cell and UB tag "
+                "within 500bp, falling back to alignment_start when the tag is absent."
+            ),
         ),
         click.option(
             "--format",

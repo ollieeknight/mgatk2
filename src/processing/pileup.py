@@ -25,6 +25,12 @@ for _char, _idx in (("A", 0), ("C", 1), ("G", 2), ("T", 3)):
 # Reused so the hot loop never allocates a position vector.
 _POSITIONS = np.arange(1 << 16, dtype=np.int32)
 
+# A 12bp UMI can recur by chance across a 16.6kb contig, so UMI deduplication
+# only collapses reads within this many bases of the last kept read carrying
+# the same UMI and strand. 500bp covers 10x 3' fragment sizes.
+UMI_TAG = "UB"
+UMI_DEDUP_WINDOW = 500
+
 CIGAR_MATCH = (0, 7, 8)
 CIGAR_REF_ONLY = (2, 3)
 CIGAR_QUERY_ONLY = (1, 4)
@@ -101,6 +107,7 @@ class _Shard:
         min_dist = config.min_distance_from_end
         dedup = not config.skip_deduplication
         use_fragment_length = config.use_fragment_length_dedup
+        use_umi = config.use_umi_dedup
         index_of = self.index_of
         is_bulk = self.is_bulk
         counts = self.counts
@@ -108,6 +115,7 @@ class _Shard:
         n_reads = self.n_reads
         n_paired = self.n_paired
         seen: list[set] = [set() for _ in range(self.n_cells)] if dedup else []
+        umi_last: list[dict] = [{} for _ in range(self.n_cells)] if dedup and use_umi else []
 
         total_reads = 0
         duplicates = 0
@@ -152,14 +160,28 @@ class _Shard:
                 # Deduplicate only reads that passed every filter, as mgatk
                 # does, so a failing read can never claim a duplicate's key.
                 if dedup:
-                    key = (read.reference_start << 1) | int(read.is_reverse)
-                    if use_fragment_length:
-                        key |= abs(read.template_length or 0) << 32
-                    cell_seen = seen[cell]
-                    if key in cell_seen:
-                        duplicates += 1
-                        continue
-                    cell_seen.add(key)
+                    umi = read.get_tag(UMI_TAG) if use_umi and read.has_tag(UMI_TAG) else None
+                    if umi is not None:
+                        # Chained forward through the coordinate-sorted stream.
+                        chain_key = (umi, read.is_reverse)
+                        last_start = umi_last[cell].get(chain_key)
+                        if (
+                            last_start is not None
+                            and read.reference_start - last_start <= UMI_DEDUP_WINDOW
+                        ):
+                            duplicates += 1
+                            continue
+                        umi_last[cell][chain_key] = read.reference_start
+                    else:
+                        # Reads without a UMI fall back to start and strand.
+                        key = (read.reference_start << 1) | int(read.is_reverse)
+                        if use_fragment_length:
+                            key |= abs(read.template_length or 0) << 32
+                        cell_seen = seen[cell]
+                        if key in cell_seen:
+                            duplicates += 1
+                            continue
+                        cell_seen.add(key)
 
                 # Counted only once the read is certain to contribute bases, so
                 # this stays equal to the Tn5 cut total.

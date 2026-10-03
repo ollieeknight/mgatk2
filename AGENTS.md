@@ -59,6 +59,16 @@ in `processing/` or `file_io/writers.py`.
 - Deduplication per cell, keyed on alignment start, strand, optionally template
   length. Runs after every read filter, never before: a failing read must not
   claim a key and displace a passing duplicate.
+- `umi` mode keys on cell + `UB` tag + strand, chained forward through the
+  coordinate-sorted stream and bounded to `UMI_DEDUP_WINDOW` (500bp,
+  `processing/pileup.py`). UMI alone not safe key on 16.6kb contig: two
+  unrelated molecules share 12bp UMI by chance, and unbounded key silently
+  dropped one (53,314 reads recovered on one real 10x run once bounded). Read
+  without `UB` fall back to start + strand, never dropped. Single-cell only.
+- `scrna` preset uses `umi`. On real 10x GEX chrM (22,037 cells)
+  `alignment_start` kept 17.8M reads where `(CB, UB)` collapse gives 7.2M — a
+  2.49x overcount from merging molecules that share a start.
+  `test_umi_dedup_*` pin collapse, no-collapse, fallback, and the window.
 - chrM name and length come from the BAM header via `resolve_mito_contig`;
   `mito_length` is never assumed to be 16,569.
 - CIGAR insertions advance query offset. Lose that = silently shift every base
@@ -74,6 +84,10 @@ in `processing/` or `file_io/writers.py`.
   so coordinate deduplication collapse whole amplicon to one read per cell.
   `tapestri` preset therefore force `none`. `tests/test_single_cell.py` pin both
   the preset and the destruction it prevent.
+- `tapestri` `barcode_tag: "RG"` verified on a real run: 5,218 `@RG` lines,
+  `ID`/`SM` each an 18bp cell barcode, one `RG:Z:` per read. `run --assay
+  tapestri` extracted all 5,218 barcodes and kept all 42,213,220 chrM reads;
+  mean_depth p50 69x, genome_coverage p50 88%.
 - `--panel-bed` scope `coverage_breadth` to targeted bases. `mean_depth` and
   `median_depth` stay whole-contig, so they remain comparable across runs.
 - `--max-strand-bias` means `|forward - reverse| / total` everywhere, single-cell

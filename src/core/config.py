@@ -90,6 +90,7 @@ class PipelineConfig:
     nm_max: int = 0  # 0 disables
     skip_deduplication: bool = False
     use_fragment_length_dedup: bool = True
+    use_umi_dedup: bool = False
     n_cores: int = 8
     max_memory_gb: float = 128.0
     min_reads_per_cell: int = 1

@@ -179,6 +179,7 @@ def run_pipeline_command(
             nm_max=nm_max,
             skip_deduplication=dedup_mode == "none",
             use_fragment_length_dedup=dedup_mode == "alignment_and_fragment_length",
+            use_umi_dedup=dedup_mode == "umi",
             n_cores=determine_cores(ncores),
             max_memory_gb=max_memory,
             min_reads_per_cell=min_reads,

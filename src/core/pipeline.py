@@ -92,6 +92,7 @@ def run_metadata(
             "compute_tn5": config.compute_tn5,
             "skip_deduplication": config.skip_deduplication,
             "use_fragment_length_dedup": config.use_fragment_length_dedup,
+            "use_umi_dedup": config.use_umi_dedup,
             "barcode_tag": config.barcode_tag,
             "assay": assay,
             # Size only: the full position set is recoverable from the BED.

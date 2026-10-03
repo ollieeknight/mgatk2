@@ -93,6 +93,48 @@ def test_shard_counts_by_strand_and_deduplicates(barcoded_bam):
     assert result.tn5[1, 19, REV] == 1
 
 
+def _umi_bam(tmp_path, alignment_factory, name, reads, length=40):
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * length + "\n")
+    return alignment_factory(
+        tmp_path / f"{name}.bam",
+        reference,
+        [
+            {"name": f"r{i}", "start": start, "sequence": "ACGT" * 5, "tags": tags}
+            for i, (start, tags) in enumerate(reads)
+        ],
+    )
+
+
+def test_umi_dedup_collapses_by_molecule_not_position(tmp_path, alignment_factory):
+    umi_a = {"CB": "cell-1", "UB": "AAAACCCCGGGG"}
+    umi_b = {"CB": "cell-1", "UB": "TTTTGGGGCCCC"}
+    no_umi = {"CB": "cell-1"}
+    config = counting_config(use_umi_dedup=True, use_fragment_length_dedup=False)
+
+    # Same UMI at different starts is one molecule; different UMIs at one start
+    # are two, which is the overcount alignment_start makes on scRNA data. A
+    # read without UB falls back to start and strand rather than being dropped.
+    reads = [(0, umi_a), (0, umi_b), (3, umi_a), (5, no_umi)]
+    bam = _umi_bam(tmp_path, alignment_factory, "umi", reads)
+    result = scan_shard((str(bam), config, ["cell-1"], 0))
+
+    assert result.n_reads.tolist() == [3]
+    assert result.duplicate_reads == 1
+
+
+def test_umi_dedup_window_bounds_chance_collisions(tmp_path, alignment_factory):
+    """A 12bp UMI recurs by chance across chrM; only nearby reads collapse."""
+    config = counting_config(mito_length=16569, use_umi_dedup=True)
+    tags = {"CB": "cell-1", "UB": "AAAACCCCGGGG"}
+
+    def duplicates(gap):
+        bam = _umi_bam(tmp_path, alignment_factory, f"gap{gap}", [(0, tags), (gap, tags)], 16569)
+        return scan_shard((str(bam), config, ["cell-1"], 0)).duplicate_reads
+
+    assert [duplicates(500), duplicates(501), duplicates(8900)] == [1, 0, 0]
+
+
 def test_insertion_keeps_query_and_reference_in_register(tmp_path, alignment_factory):
     reference = tmp_path / "reference.fa"
     reference.write_text(">chrM\n" + "A" * 40 + "\n")
@@ -325,6 +367,15 @@ EXPECTED_DEFAULTS = {
 }
 
 
+def test_umi_deduplication_is_single_cell_only():
+    def choices(command):
+        _, parameters = _options(cli.commands[command])
+        return next(p for p in parameters if p.name in ("dedup_mode", "deduplication")).type.choices
+
+    assert all("umi" in choices(command) for command in ("run", "tenx", "call"))
+    assert "umi" not in choices("paired")
+
+
 @pytest.mark.parametrize("command", sorted(EXPECTED_DEFAULTS))
 def test_command_defaults_are_pinned(command):
     context, parameters = _options(cli.commands[command])
@@ -372,6 +423,7 @@ def test_assay_preset_fills_defaults_but_explicit_flags_win(caplog):
 
     resolved = apply_assay_preset("tapestri", values, explicit=set())
     assert (resolved["dedup_mode"], resolved["barcode_tag"]) == ("none", "RG")
+    assert apply_assay_preset("scrna", values, explicit=set())["dedup_mode"] == "umi"
 
     with caplog.at_level(logging.WARNING):
         resolved = apply_assay_preset("tapestri", values, explicit={"dedup_mode"})
