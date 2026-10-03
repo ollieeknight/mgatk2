@@ -85,13 +85,7 @@ def load_panel_positions(panel_bed: str, mito_chr: str) -> frozenset[int]:
 
 
 def check_alignment(path: str, mito_chr: str, reference_filename: str | None = None) -> None:
-    """Open an alignment and confirm it can supply the requested contig.
-
-    A dry run that never opens the input cannot catch the two failures that
-    waste a whole run: a missing index and a mitochondrial contig named
-    something other than what was asked for. Indexing is left to the real run,
-    so a dry run creates no files.
-    """
+    """Dry-run check: the contig and an index exist. Creates no files, indexes included."""
     try:
         with pysam.AlignmentFile(path, reference_filename=reference_filename) as alignment:
             references = set(alignment.references)

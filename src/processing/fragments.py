@@ -28,24 +28,15 @@ class Observation:
     orientation: str | None
 
 
-def alignment_key(start: int, is_reverse: bool, template_length: int, mode: str) -> tuple:
-    """Return the historical mgatk2 coordinate deduplication key."""
-    key = (start, is_reverse)
-    if mode == "alignment_and_fragment_length":
-        return (*key, abs(template_length))
-    if mode == "alignment_start":
-        return key
-    raise ValueError(f"Deduplication mode has no compatibility key: {mode}")
-
-
-def compatibility_key(read: SimpleRead, mode: str) -> tuple:
-    """Return a compatibility key for a lightweight read."""
-    return alignment_key(read.reference_start, read.is_reverse, read.template_length, mode)
-
-
-def canonical_fragment_key(fragment: Fragment, mode: str) -> tuple:
-    """Combine mate keys deterministically so a pair is one deduplication unit."""
-    return tuple(sorted(compatibility_key(read, mode) for read in fragment.reads))
+def fragment_key(fragment: Fragment, mode: str) -> tuple:
+    """Coordinate key for a whole fragment, so a mate pair is one deduplication unit."""
+    keys = []
+    for read in fragment.reads:
+        key = (read.reference_start, read.is_reverse)
+        if mode == "alignment_and_fragment_length":
+            key += (abs(read.template_length),)
+        keys.append(key)
+    return tuple(sorted(keys))
 
 
 def representative_score(fragment: Fragment) -> tuple[int, int, int, int]:
@@ -76,7 +67,7 @@ def deduplicate_fragments(
 
     groups: dict[tuple, list[Fragment]] = defaultdict(list)
     for fragment in fragments:
-        groups[canonical_fragment_key(fragment, mode)].append(fragment)
+        groups[fragment_key(fragment, mode)].append(fragment)
 
     retained: list[Fragment] = []
     duplicate_groups = duplicate_reads = 0
@@ -87,10 +78,7 @@ def deduplicate_fragments(
             duplicate_groups += 1
             duplicate_reads += sum(len(fragment.reads) for fragment in group[1:])
     retained.sort(key=lambda f: f.query_name)
-    return retained, {
-        "duplicate_groups": duplicate_groups,
-        "duplicate_reads": duplicate_reads,
-    }
+    return retained, {"duplicate_groups": duplicate_groups, "duplicate_reads": duplicate_reads}
 
 
 def fragment_orientation(fragment: Fragment) -> str | None:
@@ -151,26 +139,16 @@ def resolve_fragment_observations(
             resolved[position] = observations[0]
             continue
         stats["overlap_positions"] += 1
-        best_quality = max(observation.base_quality for observation in observations)
-        best = [
-            observation for observation in observations if observation.base_quality == best_quality
-        ]
-        bases = {observation.base for observation in observations}
-        if len(bases) == 1:
+        best_quality = max(o.base_quality for o in observations)
+        best = [o for o in observations if o.base_quality == best_quality]
+        if len({o.base for o in observations}) == 1:
             stats["overlap_agreements"] += 1
-            resolved[position] = sorted(
-                best, key=lambda observation: (observation.is_reverse, -observation.mapping_quality)
-            )[0]
-        elif len({observation.base for observation in best}) == 1:
-            stats["overlap_disagreements"] += 1
-            resolved[position] = sorted(
-                best,
-                key=lambda observation: (
-                    observation.is_reverse,
-                    -observation.mapping_quality,
-                    -observation.distance_from_end,
-                ),
-            )[0]
-        else:
-            stats["overlap_disagreements"] += 1
+            resolved[position] = min(best, key=lambda o: (o.is_reverse, -o.mapping_quality))
+            continue
+        stats["overlap_disagreements"] += 1
+        # Mates disagree: keep the higher-quality base, or mask the position on a tie.
+        if len({o.base for o in best}) == 1:
+            resolved[position] = min(
+                best, key=lambda o: (o.is_reverse, -o.mapping_quality, -o.distance_from_end)
+            )
     return resolved, stats

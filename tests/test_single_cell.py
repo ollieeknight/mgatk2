@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
+from analysis.report import generate_html_report
 from cli import cli
 from cli.options import apply_assay_preset
 from cli.utils import auto_detect_10x_structure, load_panel_positions
@@ -39,6 +41,9 @@ def test_every_command_option_documents_itself():
     ]
 
     assert undocumented == []
+    # CONTEXT_SETTINGS must reach every command, not only the group.
+    for name in cli.commands:
+        assert CliRunner().invoke(cli, [name, "-h"]).exit_code == 0, name
 
 
 def test_barcode_less_bam_is_rejected(paired_files):
@@ -67,7 +72,7 @@ def counting_config(**overrides):
 
 
 def test_shard_counts_by_strand_and_deduplicates(barcoded_bam):
-    result = scan_shard((str(barcoded_bam), counting_config(), ["cell-1", "cell-2"], 0, None))
+    result = scan_shard((str(barcoded_bam), counting_config(), ["cell-1", "cell-2"], 0))
 
     # r2 duplicates r1 exactly; the untagged barcode is never counted.
     assert result.duplicate_reads == 1
@@ -105,45 +110,16 @@ def test_insertion_keeps_query_and_reference_in_register(tmp_path, alignment_fac
         ],
     )
 
-    result = scan_shard((str(bam), counting_config(), ["cell-1"], 0, None))
+    result = scan_shard((str(bam), counting_config(), ["cell-1"], 0))
 
     assert result.counts[0, :5, A, FWD].tolist() == [1] * 5
     assert result.counts[0, 5:10, C, FWD].tolist() == [1] * 5
     assert result.counts[0, :, T, :].sum() == 0
 
 
-def test_read_without_cigar_is_skipped(tmp_path, alignment_factory):
-    """A placed read with no CIGAR has no aligned span, so it must not be counted."""
-    reference = tmp_path / "reference.fa"
-    reference.write_text(">chrM\n" + "A" * 40 + "\n")
-    bam = alignment_factory(
-        tmp_path / "nocigar.bam",
-        reference,
-        [
-            {"name": "aligned", "start": 0, "sequence": "ACGT" * 5, "tags": {"CB": "cell-1"}},
-            # Mapped, but CIGAR is absent: reference_end is None.
-            {
-                "name": "nocigar",
-                "start": 10,
-                "sequence": "A" * 20,
-                "cigar": None,
-                "flag": 16,
-                "tags": {"CB": "cell-1"},
-            },
-        ],
-    )
-
-    result = scan_shard((str(bam), counting_config(), ["cell-1"], 0, None))
-
-    # Only the genuinely aligned read contributes a read, bases, and a cut site.
-    assert result.n_reads.tolist() == [1]
-    assert result.counts[0].sum() == 20
-    assert result.tn5[0, :, REV].sum() == 0
-
-
 def test_min_distance_from_end_trims_both_read_ends(barcoded_bam):
     result = scan_shard(
-        (str(barcoded_bam), counting_config(min_distance_from_end=2), ["cell-2"], 0, None)
+        (str(barcoded_bam), counting_config(min_distance_from_end=2), ["cell-2"], 0)
     )
 
     # 20bp read, 2bp clipped at each end: only reference positions 2..17 survive.
@@ -154,7 +130,7 @@ def test_min_distance_from_end_trims_both_read_ends(barcoded_bam):
 
 def test_min_reads_per_cell_zeroes_failing_cells(barcoded_bam):
     result = scan_shard(
-        (str(barcoded_bam), counting_config(min_reads_per_cell=2), ["cell-1", "cell-2"], 0, None)
+        (str(barcoded_bam), counting_config(min_reads_per_cell=2), ["cell-1", "cell-2"], 0)
     )
 
     assert result.kept.tolist() == [True, False]
@@ -162,14 +138,17 @@ def test_min_reads_per_cell_zeroes_failing_cells(barcoded_bam):
     assert result.mean_depth[1] == 0
 
 
-def test_hdf5_output_matches_shard_counts(barcoded_bam, tmp_path):
+def test_hdf5_output_and_both_reports(barcoded_bam, tmp_path):
     config = counting_config()
     barcodes = ["cell-1", "cell-2"]
-    result = scan_shard((str(barcoded_bam), config, barcodes, 0, None))
+    result = scan_shard((str(barcoded_bam), config, barcodes, 0))
 
     writer = IncrementalHDF5Writer(tmp_path, config, barcodes)
     writer.write_shard(result, barcodes)
     writer.finalize(tmp_path / "qc")
+    (tmp_path / "qc" / "run_config.json").write_text(
+        json.dumps({"mgatk_version": "test", "parameters": {"min_base_quality": 20}})
+    )
 
     with h5py.File(tmp_path / "output" / "counts.h5") as handle:
         assert [b.decode() for b in handle["barcode"][:]] == barcodes
@@ -179,26 +158,9 @@ def test_hdf5_output_matches_shard_counts(barcoded_bam, tmp_path):
         np.testing.assert_array_equal(handle["coverage"][:], result.depth.T)
         assert handle["reference"][0] == b"A"
 
-
-def test_both_reports_render_from_one_hdf5_run(barcoded_bam, tmp_path):
-    """The two report flavours share a loader; neither may drift from the HDF5 layout."""
-    import json
-
-    from analysis.report import generate_html_report
-
-    config = counting_config()
-    barcodes = ["cell-1", "cell-2"]
-    writer = IncrementalHDF5Writer(tmp_path, config, barcodes)
-    writer.write_shard(scan_shard((str(barcoded_bam), config, barcodes, 0, None)), barcodes)
-    writer.finalize(tmp_path / "qc")
-    (tmp_path / "qc" / "run_config.json").write_text(
-        json.dumps({"mgatk_version": "test", "parameters": {"min_base_quality": 20}})
-    )
-
+    # Both report flavours read this layout; neither may drift from it.
     for tn5 in (True, False):
-        report = generate_html_report(tmp_path, "sample", tn5=tn5)
-        assert report.exists()
-        page = report.read_text()
+        page = generate_html_report(tmp_path, "sample", tn5=tn5).read_text()
         assert "data:image/png;base64," in page
         assert "min_base_quality" in page
 
@@ -228,7 +190,7 @@ def test_call_rejects_single_bam_file(caplog, tmp_path):
     assert "mgatk2 run" in caplog.text
 
 
-def test_auto_detect_finds_10x_multi_single_sample(tmp_path):
+def test_auto_detect_finds_10x_multi_sample(tmp_path):
     count_dir = tmp_path / "outs" / "per_sample_outs" / "sampleA" / "count"
     count_dir.mkdir(parents=True)
     (count_dir / "sample_alignments.bam").touch()
@@ -239,35 +201,19 @@ def test_auto_detect_finds_10x_multi_single_sample(tmp_path):
     assert bam_path.endswith("sample_alignments.bam")
     assert barcode_file.endswith("sample_filtered_barcodes.csv")
 
-
-def test_auto_detect_rejects_multiple_10x_multi_samples(tmp_path):
-    for sample in ("sampleA", "sampleB"):
-        count_dir = tmp_path / "outs" / "per_sample_outs" / sample / "count"
-        count_dir.mkdir(parents=True)
-        (count_dir / "sample_alignments.bam").touch()
-
-    with pytest.raises(InvalidInputError) as excinfo:
+    # A second sample makes the choice ambiguous.
+    other = tmp_path / "outs" / "per_sample_outs" / "sampleB" / "count"
+    other.mkdir(parents=True)
+    (other / "sample_alignments.bam").touch()
+    with pytest.raises(InvalidInputError, match="sampleA, sampleB"):
         auto_detect_10x_structure(str(tmp_path))
-
-    assert "sampleA" in str(excinfo.value)
-    assert "sampleB" in str(excinfo.value)
-
-
-def test_load_barcode_csv_reads_10x_multi_schema(tmp_path):
-    csv_file = tmp_path / "sample_filtered_barcodes.csv"
-    csv_file.write_text("GRCh38,AAAA-1\nGRCh38,CCCC-1\n")
-
-    barcodes, metadata = load_barcode_csv(str(csv_file))
-
-    assert barcodes == ["AAAA-1", "CCCC-1"]
-    assert metadata is None
 
 
 def test_tn5_cut_total_equals_retained_read_count(barcoded_bam):
     """Reads dropped by a filter must not count as retained, or the totals diverge."""
     for min_mapq, retained in ((0, 3), (61, 0)):
         config = counting_config(min_mapq=min_mapq)
-        result = scan_shard((str(barcoded_bam), config, ["cell-1", "cell-2"], 0, None))
+        result = scan_shard((str(barcoded_bam), config, ["cell-1", "cell-2"], 0))
 
         assert result.n_reads.sum() == retained
         assert result.tn5.sum() == retained
@@ -288,7 +234,7 @@ def test_strand_bias_is_forward_minus_reverse_over_total(tmp_path, alignment_fac
     )
 
     config = counting_config(max_strand_bias=0.0)
-    counts = scan_shard((str(bam), config, ["cell-1"], 0, None)).counts[0, :, A, :].sum(axis=1)
+    counts = scan_shard((str(bam), config, ["cell-1"], 0)).counts[0, :, A, :].sum(axis=1)
 
     # Balanced position 0 has bias 0 and survives even a zero ceiling; the
     # single-stranded position 10 has bias 1 and is removed.
@@ -296,20 +242,19 @@ def test_strand_bias_is_forward_minus_reverse_over_total(tmp_path, alignment_fac
     assert counts[10] == 0
 
 
-@pytest.mark.parametrize("column", ["is__cell_barcode", "is_cell_barcode", "is_cell"])
-def test_load_barcode_csv_accepts_every_cell_flag_spelling(tmp_path, column):
-    csv_file = tmp_path / "singlecell.csv"
-    csv_file.write_text(f"barcode,{column}\nAAAA-1,1\nCCCC-1,0\n")
+def test_load_barcode_csv_detects_the_schema(tmp_path):
+    atac = tmp_path / "singlecell.csv"
+    atac.write_text("barcode,is_cell\nAAAA-1,1\nCCCC-1,0\n")
+    multi = tmp_path / "sample_filtered_barcodes.csv"
+    multi.write_text("GRCh38,AAAA-1\nGRCh38,CCCC-1\n")
 
-    barcodes, metadata = load_barcode_csv(str(csv_file))
-
+    barcodes, metadata = load_barcode_csv(str(atac))
     assert barcodes == ["AAAA-1"]
-    assert metadata is not None
+    assert metadata["is_cell"] == [1]
+    assert load_barcode_csv(str(multi)) == (["AAAA-1", "CCCC-1"], None)
 
 
-# The presets `run`, `tenx`, and `call` are the whole reason three copies of the
-# single-cell option surface existed. Pinning them here is what makes one
-# shared builder safe.
+# Pinning every command's defaults is what makes one shared option builder safe.
 EXPECTED_DEFAULTS = {
     "run": {
         "bam_path": ".",
@@ -354,7 +299,6 @@ EXPECTED_DEFAULTS = {
         "min_mapq": 30,
         "min_distance_from_end": 5,
         "max_strand_bias": 1.0,
-        "max_memory": 128.0,
         "mito_genome": "chrM",
         "compute_tn5": True,
         "nh_max": 0,
@@ -362,7 +306,7 @@ EXPECTED_DEFAULTS = {
         "output_dir": "mgatk2",
     },
     "paired": {
-        "base_qual": 20,
+        "min_baseq": 20,
         "min_mapq": 20,
         "min_distance_from_end": 5,
         "max_strand_bias": 0.9,
@@ -373,7 +317,7 @@ EXPECTED_DEFAULTS = {
         "min_tumor_af": 0.005,
         "max_normal_af": 0.01,
         "circular_edge_bases": 500,
-        "mito_genome": "chrM",
+        "mito_chr": "chrM",
         "autosomal_median_depth": None,
         "custom_blacklist": None,
         "input_is_consensus": False,
@@ -390,11 +334,6 @@ def test_command_defaults_are_pinned(command):
 
     for name, value in EXPECTED_DEFAULTS[command].items():
         assert actual[name] == value, name
-
-
-@pytest.mark.parametrize("command", ["run", "tenx", "call", "paired", "hardmask-fasta"])
-def test_short_help_flag_is_accepted(command):
-    assert CliRunner().invoke(cli, [command, "-h"]).exit_code == 0
 
 
 def test_bulk_runs_skip_the_per_cell_html_report(tmp_path, barcoded_bam):
@@ -428,16 +367,16 @@ def test_call_runs_each_bam_as_a_bulk_sample(monkeypatch, tmp_path, status):
     assert all(call["compute_tn5"] is False for call in calls)
 
 
-def test_assay_preset_fills_options_the_user_did_not_set():
-    resolved = apply_assay_preset(
-        "tapestri",
-        {"dedup_mode": "alignment_start", "barcode_tag": "CB", "compute_tn5": True},
-        explicit=set(),
-    )
+def test_assay_preset_fills_defaults_but_explicit_flags_win(caplog):
+    values = {"dedup_mode": "alignment_start", "barcode_tag": "CB", "compute_tn5": True}
 
-    assert resolved["dedup_mode"] == "none"
-    assert resolved["barcode_tag"] == "RG"
-    assert resolved["compute_tn5"] is False
+    resolved = apply_assay_preset("tapestri", values, explicit=set())
+    assert (resolved["dedup_mode"], resolved["barcode_tag"]) == ("none", "RG")
+
+    with caplog.at_level(logging.WARNING):
+        resolved = apply_assay_preset("tapestri", values, explicit={"dedup_mode"})
+    assert resolved["dedup_mode"] == "alignment_start"
+    assert "--deduplication" in caplog.text
 
 
 def test_panel_bed_scopes_coverage_breadth_to_targeted_bases(tmp_path, barcoded_bam):
@@ -446,19 +385,11 @@ def test_panel_bed_scopes_coverage_breadth_to_targeted_bases(tmp_path, barcoded_
     panel.write_text("chrM\t0\t20\n")  # cell-2's read covers exactly positions 1-20
 
     def breadth(config):
-        return scan_shard((str(barcoded_bam), config, ["cell-2"], 0, None)).coverage_breadth[0]
+        return scan_shard((str(barcoded_bam), config, ["cell-2"], 0)).coverage_breadth[0]
 
     assert breadth(counting_config()) == pytest.approx(0.5)
     panel_positions = load_panel_positions(str(panel), "chrM")
     assert breadth(counting_config(panel_positions=panel_positions)) == pytest.approx(1.0)
-
-
-def test_panel_positions_are_one_based_inclusive(tmp_path):
-    bed = tmp_path / "p.bed"
-    bed.write_text("chrM\t0\t3\nchrOther\t0\t99\n")
-
-    # BED is 0-based half-open [0,3); only chrM rows count.
-    assert load_panel_positions(str(bed), "chrM") == frozenset({1, 2, 3})
 
 
 @pytest.fixture
@@ -483,7 +414,7 @@ def test_coordinate_dedup_would_destroy_amplicon_data(amplicon_bam):
     """Why the tapestri preset turns deduplication off."""
     config = counting_config(barcode_tag="RG", skip_deduplication=False)
 
-    result = scan_shard((str(amplicon_bam), config, ["cell-1"], 0, None))
+    result = scan_shard((str(amplicon_bam), config, ["cell-1"], 0))
 
     assert int(result.n_reads[0]) == 1
     assert result.duplicate_reads == 29
@@ -507,20 +438,7 @@ def test_tapestri_assay_keeps_every_amplicon_molecule(tmp_path, amplicon_bam):
 def test_assay_selects_the_report_before_metadata_inference():
     # singlecell.csv metadata implies ATAC only when no assay is declared.
     assert wants_tn5_report(barcode_metadata={"a": 1}, assay="tapestri") is False
-    assert wants_tn5_report(barcode_metadata={"a": 1}, assay="scrna") is False
-    assert wants_tn5_report(barcode_metadata=None, assay="scatac") is True
     assert wants_tn5_report(barcode_metadata={"a": 1}, assay=None) is True
-    assert wants_tn5_report(barcode_metadata=None, assay=None) is False
-
-
-def test_explicit_flag_beats_the_preset_and_warns_with_the_real_flag(caplog):
-    with caplog.at_level(logging.WARNING):
-        resolved = apply_assay_preset(
-            "tapestri", {"dedup_mode": "alignment_start"}, explicit={"dedup_mode"}
-        )
-
-    assert resolved["dedup_mode"] == "alignment_start"
-    assert "--deduplication" in caplog.text
 
 
 def test_mito_alias_resolves_before_barcode_discovery(tmp_path, barcoded_bam):

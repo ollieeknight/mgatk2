@@ -20,35 +20,23 @@ class SimpleRead:
     is_paired: bool = False
     template_length: int = 0
     query_name: str = ""
-    reference_end: int = 0
     is_read1: bool = False
     is_read2: bool = False
-    is_qcfail: bool = False
-    is_duplicate: bool = False
 
     def get_aligned_pairs(self) -> list[tuple[int, int]]:
-        """Get aligned (query_pos, ref_pos) pairs."""
+        """(query_pos, ref_pos) for every aligned base; indels are skipped."""
         pairs = []
         ref_pos = self.reference_start
         query_pos = 0
-
         for op, length in self.cigar:
-            if op == 0:
-                for _ in range(length):
-                    pairs.append((query_pos, ref_pos))
-                    query_pos += 1
-                    ref_pos += 1
-            elif op == 1:
+            if op in (0, 7, 8):
+                pairs.extend((query_pos + i, ref_pos + i) for i in range(length))
                 query_pos += length
-            elif op in [2, 3]:
                 ref_pos += length
-            elif op == 4:
+            elif op in (1, 4):
                 query_pos += length
-            elif op in [7, 8]:
-                for _ in range(length):
-                    pairs.append((query_pos, ref_pos))
-                    query_pos += 1
-                    ref_pos += 1
+            elif op in (2, 3):
+                ref_pos += length
         return pairs
 
 
@@ -117,22 +105,20 @@ class PipelineConfig:
     min_mapq: int = 30
     max_strand_bias: float = 1.0
     min_distance_from_end: int = 5
-    nh_max: int = 0  # 0 = disabled; 1 matches mgatk tenx default
-    nm_max: int = 0  # 0 = disabled; 4 matches mgatk tenx default
+    nh_max: int = 0  # 0 disables
+    nm_max: int = 0  # 0 disables
     skip_deduplication: bool = False
     use_fragment_length_dedup: bool = True
-    n_cores: int = 8  # also the default number of barcode shards
+    n_cores: int = 8
     max_memory_gb: float = 128.0
     min_reads_per_cell: int = 1
     barcode_tag: str = "CB"
     mito_chr: str = "chrM"
     mito_length: int = 16569
     compute_tn5: bool = True
-    # 1-based targeted positions for an amplicon panel. Coverage breadth is
-    # reported against these, because a base a panel never targets has not
-    # failed to be covered.
+    # 1-based amplicon panel positions; coverage breadth is scoped to these.
     panel_positions: frozenset[int] | None = None
 
-    # uint32 base counts (4 bases x 2 strands) plus uint32 Tn5 cuts (2 strands).
     def bytes_per_cell(self) -> int:
+        # uint32 base counts (4 bases x 2 strands) plus uint32 Tn5 cuts (2 strands).
         return self.mito_length * (4 * 2 + 2) * 4

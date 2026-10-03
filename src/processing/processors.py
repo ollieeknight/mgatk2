@@ -18,18 +18,14 @@ logger = logging.getLogger(__name__)
 MP_CONTEXT = "fork" if platform.system() == "Linux" else "spawn"
 
 
-def build_tasks(bam_path, config, barcodes, reference_filename=None) -> list[tuple]:
-    """Split the barcode list into contiguous shards that fit the memory budget."""
+def process_shards(bam_path, config, barcodes, writer) -> dict:
+    """Scan chrM once per shard, writing each finished shard straight to disk."""
+    # Contiguous shards, so each writes one chunk-aligned block of HDF5 columns.
     per_shard = plan_shards(len(barcodes), config)
-    return [
-        (str(bam_path), config, barcodes[lo : lo + per_shard], lo, reference_filename)
+    tasks = [
+        (str(bam_path), config, barcodes[lo : lo + per_shard], lo)
         for lo in range(0, len(barcodes), per_shard)
     ]
-
-
-def process_shards(bam_path, config, barcodes, writer, reference_filename=None) -> dict:
-    """Scan chrM once per shard, writing each finished shard straight to disk."""
-    tasks = build_tasks(bam_path, config, barcodes, reference_filename)
     n_cells = len(barcodes)
     workers = min(config.n_cores, len(tasks))
 

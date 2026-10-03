@@ -51,8 +51,6 @@ def binomial_ci(successes: int, total: int, alpha: float = 0.05) -> tuple[float,
 
 def benjamini_hochberg(p_values: list[float]) -> list[float]:
     """Return monotone Benjamini-Hochberg adjusted p-values."""
-    if not p_values:
-        return []
     order = sorted(range(len(p_values)), key=p_values.__getitem__)
     adjusted = [1.0] * len(p_values)
     running = 1.0
@@ -81,22 +79,16 @@ def _rank_sums(
     histograms: QualityHistograms, index: int, alternate: int, reference: int | None
 ) -> dict[str, float]:
     """Alternate-versus-reference rank-sum z-scores and p-values."""
-    if reference is None:
-        return {
-            "rsbq": 0.0,
-            "rsbq_p": 1.0,
-            "rsmq": 0.0,
-            "rsmq_p": 1.0,
-            "rspos": 0.0,
-            "rspos_p": 1.0,
-        }
     results = {}
     for name, source in (
         ("rsbq", histograms.baseq),
         ("rsmq", histograms.mapq),
         ("rspos", histograms.distance),
     ):
-        z_score, p_value = rank_sum(source[index, alternate], source[index, reference])
+        if reference is None:
+            z_score, p_value = 0.0, 1.0
+        else:
+            z_score, p_value = rank_sum(source[index, alternate], source[index, reference])
         results[name] = z_score
         results[f"{name}_p"] = p_value
     return results
@@ -107,17 +99,22 @@ def _strand_bias(forward: int, reverse: int) -> float:
     return abs(forward - reverse) / total if total else 0.0
 
 
-def _orientation(histograms: QualityHistograms, index: int, allele: int | None) -> tuple[int, int]:
+def _pair(array, index: int, allele: int | None) -> tuple[int, int]:
+    """Forward/reverse or F1R2/F2R1 counts for one allele; zeros for an N reference."""
     if allele is None:
         return 0, 0
-    return (
-        int(histograms.orientation[index, allele, 0]),
-        int(histograms.orientation[index, allele, 1]),
-    )
+    return int(array[index, allele, 0]), int(array[index, allele, 1])
+
+
+def unresolved_edge(position: int, length: int, config: PairedConfig) -> bool:
+    """Within --circular-edge-bases of either end of a linear reference."""
+    edge = config.circular_edge_bases
+    return not config.shifted_reference_supplied and (position <= edge or position > length - edge)
 
 
 def construct_candidates(
-    evidence_rows: list[dict],
+    chromosome: str,
+    reference: str,
     tumor: QualityHistograms,
     normal: QualityHistograms,
     config: PairedConfig,
@@ -126,59 +123,40 @@ def construct_candidates(
 ) -> list[dict]:
     """Create one row for every observed non-reference SNV allele."""
     candidates = []
-    p_values = []
-    length = len(evidence_rows)
+    tumor_depths = tumor.depth()
+    normal_depths = normal.depth()
 
-    for evidence in evidence_rows:
-        index = evidence["pos"] - 1
-        ref = evidence["ref"]
+    for index, ref in enumerate(reference):
         reference_allele = BASE_INDEX.get(ref)
-
         for alt, alternate_allele in BASE_INDEX.items():
             if alt == ref:
                 continue
-            tumor_alt_fwd = evidence[f"tumor_{alt.lower()}_fwd"]
-            tumor_alt_rev = evidence[f"tumor_{alt.lower()}_rev"]
-            normal_alt_fwd = evidence[f"normal_{alt.lower()}_fwd"]
-            normal_alt_rev = evidence[f"normal_{alt.lower()}_rev"]
+            tumor_alt_fwd, tumor_alt_rev = _pair(tumor.counts, index, alternate_allele)
+            normal_alt_fwd, normal_alt_rev = _pair(normal.counts, index, alternate_allele)
             tumor_alt = tumor_alt_fwd + tumor_alt_rev
             normal_alt = normal_alt_fwd + normal_alt_rev
             if tumor_alt == normal_alt == 0:
                 continue
 
-            known_reference = ref in BASE_INDEX
-            reference_key = ref.lower()
-            tumor_ref_fwd = evidence[f"tumor_{reference_key}_fwd"] if known_reference else 0
-            tumor_ref_rev = evidence[f"tumor_{reference_key}_rev"] if known_reference else 0
-            normal_ref_fwd = evidence[f"normal_{reference_key}_fwd"] if known_reference else 0
-            normal_ref_rev = evidence[f"normal_{reference_key}_rev"] if known_reference else 0
-            tumor_ref = tumor_ref_fwd + tumor_ref_rev
-            normal_ref = normal_ref_fwd + normal_ref_rev
-            tumor_depth = evidence["tumor_dp"]
-            normal_depth = evidence["normal_dp"]
-            tumor_af = tumor_alt / tumor_depth if tumor_depth else 0.0
-            normal_af = normal_alt / normal_depth if normal_depth else 0.0
+            tumor_ref_fwd, tumor_ref_rev = _pair(tumor.counts, index, reference_allele)
+            normal_ref_fwd, normal_ref_rev = _pair(normal.counts, index, reference_allele)
+            tumor_depth = int(tumor_depths[index])
+            normal_depth = int(normal_depths[index])
 
             enrichment_p = _fisher_p(
-                [
-                    [tumor_alt, max(0, tumor_depth - tumor_alt)],
-                    [normal_alt, max(0, normal_depth - normal_alt)],
-                ],
+                [[tumor_alt, tumor_depth - tumor_alt], [normal_alt, normal_depth - normal_alt]],
                 alternative="greater",
             )
-
             error_rate = error_rates.get(f"{ref}>{alt}", MIN_ERROR_RATE)
             sequencing_error_p = (
-                float(binom.sf(tumor_alt - 1, tumor_depth, error_rate))
-                if tumor_depth and tumor_alt
-                else 1.0
+                float(binom.sf(tumor_alt - 1, tumor_depth, error_rate)) if tumor_alt else 1.0
             )
-
             strand_p = _fisher_p([[tumor_alt_fwd, tumor_alt_rev], [tumor_ref_fwd, tumor_ref_rev]])
-            tumor_alt_f1r2, tumor_alt_f2r1 = _orientation(tumor, index, alternate_allele)
-            tumor_ref_f1r2, tumor_ref_f2r1 = _orientation(tumor, index, reference_allele)
-            normal_alt_f1r2, normal_alt_f2r1 = _orientation(normal, index, alternate_allele)
-            normal_ref_f1r2, normal_ref_f2r1 = _orientation(normal, index, reference_allele)
+
+            tumor_alt_f1r2, tumor_alt_f2r1 = _pair(tumor.orientation, index, alternate_allele)
+            tumor_ref_f1r2, tumor_ref_f2r1 = _pair(tumor.orientation, index, reference_allele)
+            normal_alt_f1r2, normal_alt_f2r1 = _pair(normal.orientation, index, alternate_allele)
+            normal_ref_f1r2, normal_ref_f2r1 = _pair(normal.orientation, index, reference_allele)
             # Only meaningful when both mates were present; single-end and
             # orphan input leaves every orientation count at zero.
             orientation_p = (
@@ -191,18 +169,18 @@ def construct_candidates(
             normal_ci = binomial_ci(normal_alt, normal_depth)
 
             row = {
-                "chrom": evidence["chrom"],
-                "pos": evidence["pos"],
+                "chrom": chromosome,
+                "pos": index + 1,
                 "ref": ref,
                 "alt": alt,
                 "normal_dp": normal_depth,
-                "normal_ref_count": normal_ref,
+                "normal_ref_count": normal_ref_fwd + normal_ref_rev,
                 "normal_ac": normal_alt,
-                "normal_af": normal_af,
+                "normal_af": normal_alt / normal_depth if normal_depth else 0.0,
                 "tumor_dp": tumor_depth,
-                "tumor_ref_count": tumor_ref,
+                "tumor_ref_count": tumor_ref_fwd + tumor_ref_rev,
                 "tumor_ac": tumor_alt,
-                "tumor_af": tumor_af,
+                "tumor_af": tumor_alt / tumor_depth if tumor_depth else 0.0,
                 "normal_ref_fwd": normal_ref_fwd,
                 "normal_ref_rev": normal_ref_rev,
                 "normal_alt_fwd": normal_alt_fwd,
@@ -226,25 +204,22 @@ def construct_candidates(
                 "error_rate": error_rate,
                 "seq_p": sequencing_error_p,
                 "enrich_p": enrichment_p,
-                "enrich_q": 1.0,
                 "strand_p": strand_p,
                 "orient_p": orientation_p,
             }
-
             # Quality medians are tumour-derived only: nothing filters on the
-            # normal-side values and they doubled the record for no reader.
+            # normal-side values.
             for label, allele in (("ref", reference_allele), ("alt", alternate_allele)):
                 for metric, value in _allele_quality(tumor, index, allele).items():
                     row[f"tumor_{label}_{metric}"] = value
             row.update(_rank_sums(tumor, index, alternate_allele, reference_allele))
-
             candidates.append(row)
-            p_values.append(enrichment_p)
 
-    for row, q_value in zip(candidates, benjamini_hochberg(p_values), strict=True):
+    q_values = benjamini_hochberg([row["enrich_p"] for row in candidates])
+    for row, q_value in zip(candidates, q_values, strict=True):
         row["enrich_q"] = q_value
         row["qual"] = round(phred(q_value), 2)
-        row["filter"] = ";".join(_filters(row, config, blacklist, length)) or "PASS"
+        row["filter"] = ";".join(_filters(row, config, blacklist, len(reference))) or "PASS"
     return candidates
 
 
@@ -263,9 +238,7 @@ def _filters(row: dict, config: PairedConfig, blacklist: set[int], length: int) 
         filters.append("HIGH_NORMAL_AF")
     if row["pos"] in blacklist:
         filters.append("BLACKLIST")
-    if not config.shifted_reference_supplied and (
-        row["pos"] <= config.circular_edge_bases or row["pos"] > length - config.circular_edge_bases
-    ):
+    if unresolved_edge(row["pos"], length, config):
         filters.append("CIRCULAR_EDGE_UNRESOLVED")
     if (
         row["strand_p"] < ARTEFACT_P

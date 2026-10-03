@@ -143,7 +143,6 @@ class BAMReader:
                     reads.append(
                         SimpleRead(
                             reference_start=read.reference_start,
-                            reference_end=read.reference_end or read.reference_start,
                             is_reverse=read.is_reverse,
                             mapping_quality=read.mapping_quality,
                             query_sequence=read.query_sequence.encode("ascii"),
@@ -155,8 +154,6 @@ class BAMReader:
                             query_name=read.query_name,
                             is_read1=read.is_read1,
                             is_read2=read.is_read2,
-                            is_qcfail=read.is_qcfail,
-                            is_duplicate=read.is_duplicate,
                         )
                     )
         except InvalidInputError:

@@ -161,7 +161,7 @@ The reference allele table is inferred from aggregate counts across all cells.
 -bt, --barcode-tag TEXT      BAM tag holding the cell barcode [default: CB]
     --min-barcode-reads INT  Minimum reads per barcode when detecting them from the BAM [default: 10]
 -t, --threads INT            Concurrent shard workers, or concurrent BAMs for `call` [default: auto]
--m, --memory FLOAT           Memory budget in GB shared by the workers [default: 128]
+-m, --memory FLOAT           Memory budget in GB shared by the workers [default: 128] (not `call`)
 -q, --quality INT            Minimum base quality
     --mapq INT               Minimum mapping quality
 -c, --min-reads INT          Minimum deduplicated reads per cell (floored at 1)
@@ -180,8 +180,8 @@ The reference allele table is inferred from aggregate counts across all cells.
 
 `call` has no barcode options: it treats every `*.bam` in the input directory as
 one bulk sample, running one process per BAM so each keeps its own log file.
-Its `--memory` is accepted for compatibility but can never bind, because a bulk
-sample is a single cell and so never shards.
+It has no `--memory` either: a bulk sample is a single cell, so it never shards
+and a budget could never bind.
 
 The defaults that differ between the presets:
 

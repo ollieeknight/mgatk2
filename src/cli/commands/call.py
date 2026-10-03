@@ -17,15 +17,6 @@ from ..utils import check_alignment, determine_cores, run_pipeline_command
 logger = logging.getLogger(__name__)
 
 
-def _run_one_sample(arguments: dict) -> int:
-    """Process one bulk BAM in its own process.
-
-    Each sample owns a whole pipeline, including the root-logger file handler
-    that `setup_file_logging` installs, so samples must not share a process.
-    """
-    return run_pipeline_command(**arguments)
-
-
 @click.command(context_settings=CONTEXT_SETTINGS)
 @singlecell_options("call")
 def call(bam_path, output_dir, ncores, dry_run, **options):
@@ -33,21 +24,18 @@ def call(bam_path, output_dir, ncores, dry_run, **options):
     input_path = Path(bam_path)
     if input_path.is_file():
         logger.error(
-            f"'call' expects a directory of one-BAM-per-cell files, not a single BAM: {bam_path}"
-        )
-        logger.info(
-            "Try: mgatk2 run -i <bam> for a single multi-cell BAM (e.g. Tapestri/10x .cells.bam)"
+            "'call' expects a directory of one-BAM-per-cell files, not a single BAM: %s. "
+            "Use mgatk2 run -i <bam> for a single multi-cell BAM.",
+            bam_path,
         )
         raise SystemExit(1)
 
     bam_files = sorted(input_path.glob("*.bam"))
     if not bam_files:
-        logger.error(f"No BAM files (*.bam) found in directory: {bam_path}")
+        logger.error("No BAM files (*.bam) found in directory: %s", bam_path)
         raise SystemExit(1)
 
-    logger.info("Found %s BAM files:", len(bam_files))
-    for bam_file in bam_files:
-        logger.info(f"  {bam_file.name} ({bam_file.stat().st_size / (1024**3):.2f} GB)")
+    logger.info("Found %s BAM files", len(bam_files))
 
     if dry_run:
         try:
@@ -64,8 +52,8 @@ def call(bam_path, output_dir, ncores, dry_run, **options):
             "bam_path": str(bam_file),
             "output_dir": str(Path(output_dir) / bam_file.stem),
             "barcode_file": "bulk",
-            # Each sample is one bulk pseudo-cell, so a sample never shards;
-            # the thread budget buys concurrency across samples.
+            # A bulk sample is one pseudo-cell and never shards, so the
+            # thread budget goes on running samples side by side instead.
             "ncores": 1,
             "min_reads": 0,
         }
@@ -74,13 +62,15 @@ def call(bam_path, output_dir, ncores, dry_run, **options):
 
     workers = min(determine_cores(ncores), len(tasks))
     logger.info("Processing %s BAM files on %s worker(s)", len(tasks), workers)
+    # One process per sample: each installs its own root-logger file handler.
     if workers <= 1:
-        statuses = [_run_one_sample(task) for task in tasks]
+        statuses = [run_pipeline_command(**task) for task in tasks]
     else:
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=mp.get_context(MP_CONTEXT)
         ) as pool:
-            statuses = list(pool.map(_run_one_sample, tasks))
+            futures = [pool.submit(run_pipeline_command, **task) for task in tasks]
+            statuses = [future.result() for future in futures]
 
     failed = [bam.name for bam, status in zip(bam_files, statuses, strict=True) if status]
     if failed:

@@ -16,11 +16,17 @@ import h5py
 import numpy as np
 
 from core.config import PipelineConfig
+from file_io.formats import write_cell_stats
 
 logger = logging.getLogger(__name__)
 
 BASES = ("A", "C", "G", "T")
 STRANDS = ("fwd", "rev")
+
+
+def _reference_alleles(base_totals: np.ndarray) -> np.ndarray:
+    """Most-observed base at each position across all cells, N where uncovered."""
+    return np.where(base_totals.max(axis=1) > 0, np.array(BASES)[base_totals.argmax(axis=1)], "N")
 
 
 def _cell_stat_rows(result, barcodes) -> list[dict]:
@@ -55,8 +61,7 @@ class IncrementalHDF5Writer:
         barcode_metadata=None,
     ):
         self.final_output_dir = output_dir / "output"
-        self.final_output_dir.mkdir(exist_ok=True, parents=True)
-        self.config = config
+        self.mito_chr = config.mito_chr
         self.barcodes = barcodes
         self.n_barcodes = len(barcodes)
         self.n_positions = config.mito_length
@@ -65,7 +70,7 @@ class IncrementalHDF5Writer:
         staging_parent = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
         self.staging_dir = Path(tempfile.mkdtemp(prefix="mgatk2_hdf5_", dir=staging_parent))
         self.output_dir = self.staging_dir / "output"
-        self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.output_dir.mkdir()
 
         self.cell_stats: list[dict] = []
         self.base_totals = np.zeros((self.n_positions, 4), dtype=np.int64)
@@ -97,7 +102,7 @@ class IncrementalHDF5Writer:
         self.counts_file = self._open_h5("counts.h5")
         self.counts_file.attrs["n_cells"] = self.n_barcodes
         self.counts_file.attrs["n_positions"] = self.n_positions
-        self.counts_file.attrs["mito_chr"] = self.config.mito_chr
+        self.counts_file.attrs["mito_chr"] = self.mito_chr
         self.counts_file.create_dataset("barcode", data=np.array(self.barcodes, dtype="S"))
 
         for base in BASES:
@@ -107,7 +112,7 @@ class IncrementalHDF5Writer:
             self._matrix(self.counts_file, f"tn5_cuts_{strand}")
 
         self.metadata_file = self._open_h5("metadata.h5")
-        self.metadata_file.attrs["mito_chr"] = self.config.mito_chr
+        self.metadata_file.attrs["mito_chr"] = self.mito_chr
         self.metadata_file.attrs["mito_length"] = self.n_positions
         self._matrix(self.metadata_file, "coverage")
         for name, dtype in (
@@ -147,17 +152,11 @@ class IncrementalHDF5Writer:
 
     def finalize(self, qc_dir: Path):
         """Write reference alleles and metadata, close, then publish from staging."""
-        from .formats import write_cell_stats
-
-        logger.info("Computing reference alleles...")
-        best = self.base_totals.argmax(axis=1)
-        ref_alleles = np.where(
-            self.base_totals.max(axis=1) > 0,
-            np.array(BASES, dtype="S1")[best],
-            b"N",
-        )
         self.metadata_file.create_dataset(
-            "reference", data=ref_alleles, compression="gzip", compression_opts=4
+            "reference",
+            data=_reference_alleles(self.base_totals).astype("S1"),
+            compression="gzip",
+            compression_opts=4,
         )
 
         if self.barcode_metadata is not None:
@@ -168,8 +167,7 @@ class IncrementalHDF5Writer:
         self._publish_hdf5_files()
 
         qc_dir.mkdir(exist_ok=True, parents=True)
-        if self.cell_stats:
-            write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
+        write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
 
     def _write_barcode_metadata(self):
         group = self.metadata_file.create_group("barcode_metadata")
@@ -190,9 +188,8 @@ class IncrementalHDF5Writer:
         self.final_output_dir.mkdir(exist_ok=True, parents=True)
         for filename in ["counts.h5", "metadata.h5"]:
             dest = self.final_output_dir / filename
-            if dest.exists():
-                dest.unlink()
-            shutil.move(str(self.output_dir / filename), str(dest))
+            dest.unlink(missing_ok=True)
+            shutil.move(self.output_dir / filename, dest)
         shutil.rmtree(self.staging_dir, ignore_errors=True)
 
 
@@ -202,8 +199,7 @@ class IncrementalTextWriter:
     def __init__(self, output_dir: Path, config: PipelineConfig, barcodes: list[str]):
         self.output_dir = output_dir / "output"
         self.output_dir.mkdir(exist_ok=True, parents=True)
-        self.config = config
-        self.barcodes = barcodes
+        self.mito_chr = config.mito_chr
         self.cell_stats: list[dict] = []
         self.base_totals = np.zeros((config.mito_length, 4), dtype=np.int64)
         self.cell_depths: dict[str, float] = {}
@@ -236,8 +232,6 @@ class IncrementalTextWriter:
         self.cell_stats.extend(_cell_stat_rows(result, barcodes))
 
     def finalize(self, qc_dir: Path):
-        from .formats import write_cell_stats
-
         for handle in (*self.base_files.values(), self.coverage_file):
             handle.close()
 
@@ -255,13 +249,10 @@ class IncrementalTextWriter:
             for cell, depth in sorted(self.cell_depths.items()):
                 f.write(f"{cell}\t{depth:.2f}\n")
 
-        best = self.base_totals.argmax(axis=1)
-        ref_alleles = np.where(self.base_totals.max(axis=1) > 0, np.array(BASES)[best], "N")
-        ref_file = self.output_dir / f"{self.config.mito_chr}_refAllele.txt"
-        with open(ref_file, "w") as f:
+        ref_alleles = _reference_alleles(self.base_totals)
+        with open(self.output_dir / f"{self.mito_chr}_refAllele.txt", "w") as f:
             f.write("pos\tref\n")
             f.write("".join(f"{i + 1}\t{allele}\n" for i, allele in enumerate(ref_alleles)))
 
         qc_dir.mkdir(exist_ok=True, parents=True)
-        if self.cell_stats:
-            write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")
+        write_cell_stats(self.cell_stats, qc_dir / "cell_stats.csv")

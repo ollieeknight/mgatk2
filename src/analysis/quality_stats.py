@@ -24,7 +24,6 @@ class QualityHistograms:
     """Per-position, per-allele counts and quality distributions for one sample."""
 
     def __init__(self, length: int):
-        self.length = length
         self.counts = np.zeros((length, 4, 2), dtype=np.int64)  # allele x strand
         self.orientation = np.zeros((length, 4, 2), dtype=np.int64)  # allele x F1R2/F2R1
         self.baseq = np.zeros((length, 4, BASEQ_BINS), dtype=np.int32)
@@ -121,8 +120,6 @@ def rank_sum(alternate: np.ndarray, reference: np.ndarray) -> tuple[float, float
     expected = n_alternate * n_reference / 2
 
     ties = float((combined**3 - combined).sum())
-    if total < 2:
-        return 0.0, 1.0
     variance = n_alternate * n_reference / 12 * ((total + 1) - ties / (total * (total - 1)))
     if variance <= 0:
         return 0.0, 1.0

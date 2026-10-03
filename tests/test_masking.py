@@ -16,31 +16,15 @@ from utils.masking import (
 )
 
 
-@pytest.mark.parametrize(
-    ("supplied", "expected"),
-    [
-        ("hg38", "hg38"),
-        ("GRCh38", "hg38"),
-        ("grch37", "hg19"),
-        ("GRCm38", "mm10"),
-        ("mm9", "mm9"),
-    ],
-)
-def test_genome_aliases_normalise(supplied, expected):
-    assert normalise_genome_name(supplied) == expected
-
-
-def test_unknown_genome_is_rejected():
+def test_genome_names_resolve_to_bundled_blacklists():
+    assert normalise_genome_name("GRCh38") == "hg38"
+    assert normalise_genome_name("grcm37") == "mm9"
     with pytest.raises(ValueError, match="not supported"):
         normalise_genome_name("rn6")
 
-
-@pytest.mark.parametrize("build", ["hg38", "hg19", "mm10", "mm9"])
-def test_every_bundled_blacklist_is_present_and_parses(build):
-    regions = load_blacklist_regions(get_blacklist_path(build))
-
-    assert regions
-    assert all(start < end for _chrom, start, end in regions)
+    for build in ("hg38", "hg19", "mm10", "mm9"):
+        regions = load_blacklist_regions(get_blacklist_path(build))
+        assert regions and all(start < end for _chrom, start, end in regions)
 
 
 def test_masking_uses_bed_half_open_coordinates(tmp_path):

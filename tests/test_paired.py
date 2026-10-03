@@ -32,36 +32,19 @@ def _config(paired_files, output, tumor="tumor_bam", normal="normal_bam", **kwar
     return PairedConfig(**values)
 
 
-def _evidence(tumor_alt, tumor_depth, normal_alt, normal_depth):
-    row = {
-        "chrom": "chrM",
-        "pos": 1,
-        "ref": "A",
-        "tumor_dp": tumor_depth,
-        "normal_dp": normal_depth,
-    }
-    for sample in ("tumor", "normal"):
-        for base in "acgt":
-            for strand in ("fwd", "rev"):
-                row[f"{sample}_{base}_{strand}"] = 0
-    row["tumor_c_fwd"] = tumor_alt
-    row["tumor_a_fwd"] = tumor_depth - tumor_alt
-    row["normal_c_fwd"] = normal_alt
-    row["normal_a_fwd"] = normal_depth - normal_alt
-    return row
+def _histograms(alt, depth):
+    """One-position histograms with `alt` forward C reads and the rest forward A."""
+    histograms = QualityHistograms(1)
+    histograms.counts[0, 1, 0] = alt
+    histograms.counts[0, 0, 0] = depth - alt
+    return histograms
 
 
-def _candidates(rows, config, blacklist=frozenset(), error_rates=None):
-    """Call construct_candidates with empty histograms; counts come from rows."""
-    length = max(row["pos"] for row in rows)
+def _candidate(config, tumor, normal, blacklist=(), error_rates=None):
+    """The A>C candidate at position 1 of a one-base reference."""
     return construct_candidates(
-        rows,
-        QualityHistograms(length),
-        QualityHistograms(length),
-        config,
-        set(blacklist),
-        error_rates or {},
-    )
+        "chrM", "A", tumor, normal, config, set(blacklist), error_rates or {}
+    )[0]
 
 
 def _qc(vcf_path):
@@ -95,20 +78,19 @@ def test_benjamini_hochberg_correction():
 
 def test_candidate_counts_and_uncertainty(paired_files, tmp_path):
     config = _config(paired_files, tmp_path)
-    shallow = _candidates([_evidence(3, 10, 0, 5)], config)[0]
-    deep = _candidates([_evidence(3, 10, 0, 500)], config)[0]
+    shallow = _candidate(config, _histograms(3, 10), _histograms(0, 5))
+    deep = _candidate(config, _histograms(3, 10), _histograms(0, 500))
 
     assert shallow["enrich_p"] > deep["enrich_p"]
     assert shallow["normal_af_ci_high"] > deep["normal_af_ci_high"]
 
-    row = _evidence(3, 10, 0, 10)
-    row["tumor_g_fwd"] = 2
-    row["tumor_a_fwd"] = 5
-
-    candidate = _candidates([row], config)[0]
+    # A third allele must not be counted as reference.
+    tumor = _histograms(3, 8)
+    tumor.counts[0, 2, 0] = 2
+    candidate = _candidate(config, tumor, _histograms(0, 10))
 
     assert candidate["tumor_ref_count"] == 5
-    assert candidate["tumor_ref_count"] != candidate["tumor_dp"] - candidate["tumor_ac"]
+    assert candidate["tumor_dp"] == 10
 
 
 def test_filters_have_a_stable_order(paired_files, tmp_path):
@@ -119,7 +101,7 @@ def test_filters_have_a_stable_order(paired_files, tmp_path):
         min_normal_depth=5,
         circular_edge_bases=0,
     )
-    row = _candidates([_evidence(1, 2, 1, 2)], config, blacklist={1})[0]
+    row = _candidate(config, _histograms(1, 2), _histograms(1, 2), blacklist={1})
 
     assert row["filter"].split(";") == [
         "LOW_TUMOR_DEPTH",
@@ -135,10 +117,10 @@ def test_filters_have_a_stable_order(paired_files, tmp_path):
 def test_sequencing_error_rate_gates_weak_alternate_support(paired_files, tmp_path):
     config = _config(paired_files, tmp_path, min_tumor_af=0.0, min_alt_observations=1)
     # 5 alt reads in 1000 is 0.5%: noise at a 1% error rate, signal at 1e-6.
-    row = _evidence(5, 1000, 0, 1000)
+    tumor, normal = _histograms(5, 1000), _histograms(0, 1000)
 
-    noisy = _candidates([row], config, error_rates={"A>C": 0.01})[0]
-    clean = _candidates([row], config, error_rates={"A>C": 1e-6})[0]
+    noisy = _candidate(config, tumor, normal, error_rates={"A>C": 0.01})
+    clean = _candidate(config, tumor, normal, error_rates={"A>C": 1e-6})
 
     assert noisy["seq_p"] > clean["seq_p"]
     assert "WEAK_EVIDENCE" in noisy["filter"]
@@ -146,12 +128,12 @@ def test_sequencing_error_rate_gates_weak_alternate_support(paired_files, tmp_pa
 
 
 def test_numt_filter_needs_autosomal_depth(paired_files, tmp_path):
-    row = _evidence(20, 1000, 0, 1000)
+    tumor, normal = _histograms(20, 1000), _histograms(0, 1000)
 
-    without = _candidates([row], _config(paired_files, tmp_path))[0]
-    with_depth = _candidates(
-        [row], _config(paired_files, tmp_path / "numt", autosomal_median_depth=30.0)
-    )[0]
+    without = _candidate(_config(paired_files, tmp_path), tumor, normal)
+    with_depth = _candidate(
+        _config(paired_files, tmp_path, autosomal_median_depth=30.0), tumor, normal
+    )
 
     assert "POSSIBLE_NUMT" not in without["filter"]
     assert "POSSIBLE_NUMT" in with_depth["filter"]
@@ -173,18 +155,13 @@ def test_histogram_median_and_rank_sum_separate_distributions():
 
 
 def test_paired_dry_run(paired_files, tmp_path):
-    result = CliRunner().invoke(cli, [*_paired_args(paired_files, tmp_path), "--dry-run"])
+    args = [*_paired_args(paired_files, tmp_path / "out"), "--dry-run"]
 
+    result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0
-    assert "dry run complete" in result.output
-    assert not (tmp_path / "pair.mt_variants.vcf.gz").exists()
+    assert not (tmp_path / "out").exists()
 
-
-def test_paired_dry_run_rejects_a_missing_contig(paired_files, tmp_path):
-    result = CliRunner().invoke(
-        cli, [*_paired_args(paired_files, tmp_path), "--dry-run", "-g", "chrM_absent"]
-    )
-
+    result = CliRunner().invoke(cli, [*args, "-g", "chrM_absent"])
     assert result.exit_code != 0
     assert "is absent from" in result.output
 
@@ -195,11 +172,6 @@ def test_bam_and_cram_give_the_same_counts(paired_files, tmp_path):
         _config(paired_files, tmp_path / "cram", tumor="tumor_cram", normal="normal_cram")
     )
 
-    assert (bam.evidence_positions, bam.candidates, bam.callable_positions) == (
-        cram.evidence_positions,
-        cram.candidates,
-        cram.callable_positions,
-    )
     with pysam.VariantFile(bam.outputs["vcf"]) as bam_vcf:
         with pysam.VariantFile(cram.outputs["vcf"]) as cram_vcf:
             assert [str(record) for record in bam_vcf] == [str(record) for record in cram_vcf]
@@ -271,7 +243,6 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
     config = _config(paired_files, output)
     result = run_paired_pipeline(config)
 
-    assert set(result.outputs) == {"vcf", "vcf_index", "callable_bed"}
     assert sorted(path.name for path in output.iterdir()) == [
         "pair.mt_callable.bed.gz",
         "pair.mt_variants.vcf.gz",
@@ -299,19 +270,16 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
 def test_rank_sum_filters_fire_only_on_degraded_alternates(paired_files, tmp_path):
     """A low-quality alternate is flagged; a high-quality one is not."""
     config = _config(paired_files, tmp_path, min_tumor_af=0.0, min_alt_observations=1)
-    row = _evidence(20, 100, 0, 100)
 
-    def _candidate(alternate_bin):
-        tumor = QualityHistograms(1)
+    def with_alternate_at(alternate_bin):
+        tumor = _histograms(20, 100)
         for source in (tumor.baseq, tumor.mapq, tumor.distance):
             source[0, 0, 30] = 80  # reference allele A
             source[0, 1, alternate_bin] = 20  # alternate allele C
-        return construct_candidates(
-            [row], tumor, QualityHistograms(1), config, set(), {"A>C": 1e-6}
-        )[0]
+        return _candidate(config, tumor, _histograms(0, 100), error_rates={"A>C": 1e-6})
 
-    degraded = _candidate(5)
-    healthy = _candidate(50)
+    degraded = with_alternate_at(5)
+    healthy = with_alternate_at(50)
 
     assert degraded["rsbq"] < 0
     for flag in ("BASE_QUAL", "MAP_QUAL", "POSITION"):

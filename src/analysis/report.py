@@ -25,7 +25,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FixedLocator, FuncFormatter  # noqa: E402
 
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
-logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -37,29 +36,35 @@ _DEPTH_TICKS = [1, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000, 5000, 1
 
 
 def plot_to_base64(fig):
-    """Convert matplotlib figure to PNG"""
+    """Render a figure as an inline PNG data URI and close it."""
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=PLOT_DPI, bbox_inches="tight")
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.read()).decode("utf-8")
-    buf.close()
     plt.close(fig)
-    return f"data:image/png;base64,{img_base64}"
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def _tidy(ax):
-    """Apply the shared axis styling."""
-    ax.tick_params(colors="black")
+def _tidy(ax, xlabel, ylabel):
+    """Label the axes and apply the shared styling."""
+    ax.set_xlabel(xlabel, fontsize=10, color="black")
+    ax.set_ylabel(ylabel, fontsize=10, color="black")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("black")
-    ax.spines["bottom"].set_color("black")
 
 
 def _empty_plot(message, figsize=(6, 5)):
     fig, ax = plt.subplots(figsize=figsize)
     ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=14, color="gray")
     ax.axis("off")
+    return plot_to_base64(fig)
+
+
+def _track_plot(ylabel, draw, length):
+    """A per-position track along chrM; `draw(ax, positions)` adds the data."""
+    positions = np.arange(1, length + 1)
+    fig, ax = plt.subplots(figsize=(10, 3.5))
+    draw(ax, positions)
+    ax.set_xlim(0, length)
+    _tidy(ax, "chrM (bp)", ylabel)
     return plot_to_base64(fig)
 
 
@@ -93,10 +98,7 @@ def load_report_data(counts_file: Path, metadata_file: Path) -> dict:
         data["mean_depth"] = f["mean_depth"][:]
         data["genome_coverage"] = f["genome_coverage"][:]
         data["total_bases"] = f["total_bases"][:]
-        reference = f["reference"][:]
-        data["reference"] = [
-            base.decode() if isinstance(base, bytes) else str(base) for base in reference
-        ]
+        data["reference"] = [base.decode() for base in f["reference"][:]]
         data["total_fragments"] = (
             f["barcode_metadata"]["total"][:] if "barcode_metadata" in f else None
         )
@@ -108,161 +110,106 @@ def load_report_data(counts_file: Path, metadata_file: Path) -> dict:
 
 def create_coverage_plot(mean_coverage):
     """Mean depth along chrM."""
-    positions = np.arange(1, len(mean_coverage) + 1)
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.plot(positions, mean_coverage, linewidth=0.8, color="#2E86AB", alpha=1, zorder=2)
-    ax.set_xlabel("chrM (bp)", fontsize=10, color="black")
-    ax.set_ylabel("Mean depth", fontsize=10, color="black")
-    ax.set_xlim(0, positions[-1])
-    _tidy(ax)
+    def draw(ax, positions):
+        ax.plot(positions, mean_coverage, linewidth=0.8, color="#2E86AB")
 
-    return plot_to_base64(fig)
+    return _track_plot("Mean depth", draw, len(mean_coverage))
 
 
 def create_transposition_frequency_plot(tn5_fwd, tn5_rev):
     """Mirrored per-strand Tn5 cut sites along chrM."""
-    positions = np.arange(1, len(tn5_fwd) + 1)
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.fill_between(
-        positions, 0, tn5_fwd, linewidth=0.5, color="#A23B72", alpha=0.6, label="Forward"
-    )
-    ax.fill_between(
-        positions, 0, -tn5_rev, linewidth=0.5, color="#2E86AB", alpha=0.8, label="Reverse"
-    )
-    ax.set_xlabel("chrM (bp)", fontsize=10, color="black")
-    ax.set_ylabel("Tn5 cut sites (n)", fontsize=10, color="black")
-    ax.set_xlim(0, positions[-1])
-    ax.axhline(0, color="black", linewidth=0.8, linestyle="-")
-    _tidy(ax)
-    ax.legend(loc="upper right", frameon=False, fontsize=8)
+    def draw(ax, positions):
+        ax.fill_between(positions, 0, tn5_fwd, color="#A23B72", alpha=0.6, label="Forward")
+        ax.fill_between(positions, 0, -tn5_rev, color="#2E86AB", alpha=0.8, label="Reverse")
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.legend(loc="upper right", frameon=False, fontsize=8)
 
-    return plot_to_base64(fig)
+    return _track_plot("Tn5 cut sites (n)", draw, len(tn5_fwd))
 
 
 def create_read_start_sites_plot(tn5_fwd, tn5_rev, coverage_total):
     """Read start sites per position, from the recorded cut sites."""
     starts = tn5_fwd + tn5_rev
-
     label = "Read start sites (n)"
     if not starts.any():
         # --no-tn5 leaves no start record; fall back to depth and say so.
         starts = coverage_total
         label = "Total depth (n)"
 
-    positions = np.arange(1, len(starts) + 1)
+    def draw(ax, positions):
+        ax.fill_between(positions, 0, starts, color="#2E86AB", alpha=0.8)
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.fill_between(positions, 0, starts, linewidth=0.5, color="#2E86AB", alpha=0.8)
-    ax.set_xlabel("chrM (bp)", fontsize=10, color="black")
-    ax.set_ylabel(label, fontsize=10, color="black")
-    ax.set_xlim(0, positions[-1])
-    _tidy(ax)
-
-    return plot_to_base64(fig)
+    return _track_plot(label, draw, len(starts))
 
 
 def create_tn5_insertion_context_plot(tn5_fwd, tn5_rev, reference):
     """Dinucleotide context of Tn5 insertion sites."""
     total_tn5 = tn5_fwd + tn5_rev
-
-    bases = ["A", "C", "G", "T"]
-    dinuc_counts = {f"{first}{second}": 0 for first in bases for second in bases}
-
+    dinuc_counts = {first + second: 0 for first in "ACGT" for second in "ACGT"}
     for pos in np.flatnonzero(total_tn5[:-1]):
-        dinuc = f"{reference[pos]}{reference[pos + 1]}"
+        dinuc = reference[pos] + reference[pos + 1]
         if dinuc in dinuc_counts:
             dinuc_counts[dinuc] += int(total_tn5[pos])
 
     dinucs = sorted(dinuc_counts)
     counts = [dinuc_counts[d] for d in dinucs]
-
     total_cuts = sum(counts)
     if total_cuts == 0:
-        logger.warning("No Tn5 cuts found for insertion context plot")
         return _empty_plot("No Tn5 cut data available", figsize=(8, 4))
 
-    percentages = [(count / total_cuts) * 100 for count in counts]
-
-    colors = []
-    for dinuc in dinucs:
-        gc_content = (dinuc.count("G") + dinuc.count("C")) / 2
-        if gc_content == 0:
-            colors.append("#A23B72")  # AT-rich
-        elif gc_content == 1:
-            colors.append("#2E86AB")  # GC-rich
-        else:
-            colors.append("#9B59B6")  # mixed
+    percentages = [count / total_cuts * 100 for count in counts]
+    # Magenta for AT-only, blue for GC-only, purple for mixed contexts.
+    palette = {0: "#A23B72", 1: "#9B59B6", 2: "#2E86AB"}
+    colors = [palette[sum(base in "GC" for base in dinuc)] for dinuc in dinucs]
 
     fig, ax = plt.subplots(figsize=(8, 4))
     bars = ax.bar(dinucs, percentages, color=colors, alpha=0.8, edgecolor="black", linewidth=0.5)
-    ax.set_xlabel("Dinucleotide context", fontsize=10, color="black")
-    ax.set_ylabel("Tn5 insertion frequency (%)", fontsize=10, color="black")
     ax.set_ylim(0, max(percentages) * 1.1)
-    _tidy(ax)
+    _tidy(ax, "Dinucleotide context", "Tn5 insertion frequency (%)")
     ax.tick_params(labelsize=9)
-    plt.xticks(rotation=45, ha="right")
-
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
     for bar, percentage in zip(bars, percentages, strict=True):
-        height = bar.get_height()
-        if height > 0.5:
+        if percentage > 0.5:
             ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                height,
+                bar.get_x() + bar.get_width() / 2,
+                percentage,
                 f"{percentage:.1f}%",
                 ha="center",
                 va="bottom",
                 fontsize=7,
-                color="black",
             )
-
-    plt.tight_layout()
-
     return plot_to_base64(fig)
 
 
 def create_depth_vs_coverage_plot(mean_depth, genome_coverage):
     """Coverage breadth against mean mtDNA depth."""
     mask = (mean_depth > 0) & (genome_coverage > 0)
-    mean_depth, genome_coverage = mean_depth[mask], genome_coverage[mask]
-
-    if len(mean_depth) == 0:
-        logger.warning("No valid data for depth vs coverage plot")
+    if not mask.any():
         return _empty_plot("No data available")
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(mean_depth, genome_coverage, s=20, alpha=1, color="black", edgecolors="none")
-    ax.set_ylabel("Coverage breadth", fontsize=10, color="black")
-    ax.set_xlabel("Mean mtDNA depth", fontsize=10, color="black")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    ax.scatter(mean_depth[mask], genome_coverage[mask], s=20, color="black", edgecolors="none")
     ax.set_ylim(0, 1.05)
-
+    _tidy(ax, "Mean mtDNA depth", "Coverage breadth")
     return plot_to_base64(fig)
 
 
 def _log_scatter(x_values, y_values, x_label):
     """Log-log per-cell scatter against mtDNA depth."""
     mask = (y_values > 0) & (x_values > 0)
-    x_values, y_values = x_values[mask], y_values[mask]
-
-    if len(y_values) == 0:
-        logger.warning("No valid data for %s plot", x_label)
+    if not mask.any():
         return _empty_plot("No data available\n(all values are zero)")
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(x_values, y_values, s=10, alpha=1, color="black", edgecolors="none")
+    ax.scatter(x_values[mask], y_values[mask], s=10, color="black", edgecolors="none")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlabel(x_label, fontsize=10, color="black")
-    ax.set_ylabel("mtDNA depth (log10)", fontsize=10, color="black")
-    _tidy(ax)
-
+    _tidy(ax, x_label, "mtDNA depth (log10)")
     ax.yaxis.set_major_locator(FixedLocator(_DEPTH_TICKS))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(value):,}"))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(value):,}"))
-
     return plot_to_base64(fig)
 
 

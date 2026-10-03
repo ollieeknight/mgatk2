@@ -62,16 +62,14 @@ def plan_shards(n_cells: int, config: PipelineConfig) -> int:
 
 def scan_shard(task: tuple) -> ShardResult:
     """Stream chrM once and count bases for this shard's barcodes."""
-    bam_path, config, barcodes, offset, reference_filename = task
-    return _Shard(bam_path, config, barcodes, offset, reference_filename).run()
+    return _Shard(*task).run()
 
 
 class _Shard:
-    def __init__(self, bam_path, config: PipelineConfig, barcodes, offset, reference_filename):
+    def __init__(self, bam_path, config: PipelineConfig, barcodes, offset):
         self.bam_path = str(bam_path)
         self.config = config
         self.offset = offset
-        self.reference_filename = reference_filename
         self.index_of = {bc: i for i, bc in enumerate(barcodes)}
         self.n_cells = len(barcodes)
         self.is_bulk = list(barcodes) == ["bulk"]
@@ -86,14 +84,6 @@ class _Shard:
         )
         self.n_reads = np.zeros(self.n_cells, dtype=np.int64)
         self.n_paired = np.zeros(self.n_cells, dtype=np.int64)
-
-    def _open(self):
-        if self.bam_path.lower().endswith(".cram"):
-            return pysam.AlignmentFile(
-                self.bam_path, "rc", reference_filename=self.reference_filename
-            )
-        # BGZF decompression threads: the shard's wall time is decode-bound.
-        return pysam.AlignmentFile(self.bam_path, "rb", threads=2)
 
     def run(self) -> ShardResult:
         total_reads, duplicates = self._accumulate()
@@ -123,7 +113,8 @@ class _Shard:
         duplicates = 0
         default_quals = np.full(1024, 60, dtype=np.uint8)
 
-        with self._open() as bam:
+        # BGZF decompression threads: the shard's wall time is decode-bound.
+        with pysam.AlignmentFile(self.bam_path, "rb", threads=2) as bam:
             for read in bam.fetch(config.mito_chr):
                 total_reads += 1
 
