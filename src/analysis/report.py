@@ -1,6 +1,7 @@
 """HTML QC report generation for single-cell runs."""
 
 import base64
+import html
 import json
 import logging
 import os
@@ -241,6 +242,7 @@ def _load_run_config(output_dir: Path) -> dict:
 
 def _render_html(title, output_dir, run_config, data, sections):
     """Assemble the report page from already-rendered plot sections."""
+    title = html.escape(title)
     parameters = run_config.get("parameters", {})
     parameter_rows = "\n".join(
         f"<tr><td>{name}</td><td>{value}</td></tr>" for name, value in sorted(parameters.items())

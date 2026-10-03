@@ -44,6 +44,8 @@ def load_barcodes(
         with opener(barcode_file, "rt") as f:
             barcodes = [line.strip() for line in f if line.strip()]
 
+    # A repeated barcode would map every read to its last column and leave the rest empty.
+    barcodes = list(dict.fromkeys(barcodes))
     logger.info("Loaded %s barcodes", f"{len(barcodes):,}")
     return barcodes, metadata
 

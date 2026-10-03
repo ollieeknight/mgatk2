@@ -18,10 +18,12 @@ from core.config import PairedConfig, PipelineConfig
 from core.exceptions import InvalidInputError
 from data.blacklists import load_bed_positions
 from file_io.paired_writers import write_paired_outputs
-from processing.fragments import resolve_fragment_observations
-from processing.readers import BAMReader
+from processing.fragments import fragment_observations
+from processing.readers import BAMReader, resolve_mito_contig
 
 logger = logging.getLogger(__name__)
+
+FRAGMENTS_PER_CHUNK = 100_000
 
 
 @dataclass
@@ -44,19 +46,7 @@ def load_fasta_reference(reference_path: str, requested_chromosome: str) -> tupl
         raise InvalidInputError(f"Reference FASTA index not found: {path}.fai")
     try:
         with pysam.FastaFile(str(path)) as fasta:
-            chromosome = next(
-                (
-                    name
-                    for name in (requested_chromosome, "chrM", "MT", "M", "chrMT")
-                    if name in fasta.references
-                ),
-                None,
-            )
-            if chromosome is None:
-                raise InvalidInputError(
-                    f"No mitochondrial chromosome found in {path}; available: "
-                    f"{', '.join(fasta.references[:10])}"
-                )
+            chromosome = resolve_mito_contig(fasta.references, requested_chromosome, path)
             sequence = fasta.fetch(chromosome).upper()
     except InvalidInputError:
         raise
@@ -92,26 +82,17 @@ def collect_sample_evidence(
 
     histograms = QualityHistograms(reference_length)
     overlap_totals = {"overlap_positions": 0, "overlap_agreements": 0, "overlap_disagreements": 0}
-    orientation_index = {"F1R2": 0, "F2R1": 1}
-    for fragment in fragments:
-        observations, overlap = resolve_fragment_observations(
-            fragment, config.min_baseq, config.min_distance_from_end
+    # Chunked so the per-base arrays stay bounded at any depth.
+    for start in range(0, len(fragments), FRAGMENTS_PER_CHUNK):
+        observations, overlap = fragment_observations(
+            fragments[start : start + FRAGMENTS_PER_CHUNK],
+            config.min_baseq,
+            config.min_distance_from_end,
         )
+        in_range = observations["position"] < reference_length
+        histograms.add({name: values[in_range] for name, values in observations.items()})
         for key in overlap_totals:
             overlap_totals[key] += overlap[key]
-        for position, observation in observations.items():
-            if not 0 <= position < reference_length:
-                continue
-            histograms.add(
-                position,
-                BASE_INDEX[observation.base],
-                int(observation.is_reverse),
-                observation.base_quality,
-                observation.mapping_quality,
-                observation.distance_from_end,
-                orientation_index.get(observation.orientation, -1),
-            )
-    histograms.flush()
     stats.update(overlap_totals)
     stats["counted_observations"] = int(histograms.depth().sum())
     return histograms, stats

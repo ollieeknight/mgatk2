@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from math import isfinite, log10
 
-from scipy.stats import beta, binom, fisher_exact
+import numpy as np
+from scipy.stats import beta, binom, fisher_exact, hypergeom
 
 from analysis.quality_stats import (
     BASE_INDEX,
@@ -24,8 +25,9 @@ MIN_ERROR_RATE = 1e-6
 ARTEFACT_P = 0.001
 
 
-def _fisher_p(table: list[list[int]], alternative: str = "two-sided") -> float:
-    value = float(fisher_exact(table, alternative=alternative).pvalue)
+def _fisher_p(table: list[list[int]]) -> float:
+    """Two-sided Fisher exact p-value; 1 when undefined."""
+    value = float(fisher_exact(table).pvalue)
     return value if isfinite(value) else 1.0
 
 
@@ -36,17 +38,40 @@ def phred(probability: float) -> float:
     return min(1000.0, max(0.0, -10 * log10(probability)))
 
 
-def binomial_ci(successes: int, total: int, alpha: float = 0.05) -> tuple[float, float]:
-    """Clopper-Pearson confidence interval."""
-    if total == 0:
-        return 0.0, 1.0
-    low = 0.0 if successes == 0 else float(beta.ppf(alpha / 2, successes, total - successes + 1))
-    high = (
-        1.0
-        if successes == total
-        else float(beta.ppf(1 - alpha / 2, successes + 1, total - successes))
+def binomial_ci(successes: np.ndarray, total: np.ndarray, alpha: float = 0.05):
+    """Clopper-Pearson confidence intervals, elementwise."""
+    # Substitute a valid shape where the bound is fixed, so ppf never sees zero.
+    low = np.where(
+        successes == 0, 0.0, beta.ppf(alpha / 2, np.maximum(successes, 1), total - successes + 1)
+    )
+    high = np.where(
+        successes == total,
+        1.0,
+        beta.ppf(1 - alpha / 2, successes + 1, np.maximum(total - successes, 1)),
     )
     return low, high
+
+
+def _enrichment_p(tumor_alt, tumor_depth, normal_alt, normal_depth) -> np.ndarray:
+    """One-sided Fisher exact p-values for tumour alternate enrichment, elementwise.
+
+    Same formula as scipy's fisher_exact(alternative="greater"), vectorised:
+    an empty row or column gives 1.
+    """
+    tumor_other = tumor_depth - tumor_alt
+    normal_other = normal_depth - normal_alt
+    degenerate = ((tumor_depth == 0) | (normal_depth == 0) | (tumor_alt + normal_alt == 0)) | (
+        tumor_other + normal_other == 0
+    )
+    with np.errstate(all="ignore"):
+        p = hypergeom.cdf(
+            tumor_other,
+            tumor_depth + normal_depth,
+            tumor_depth,
+            tumor_other + normal_other,
+        )
+    p = np.where(degenerate | ~np.isfinite(p), 1.0, p)
+    return np.minimum(p, 1.0)
 
 
 def benjamini_hochberg(p_values: list[float]) -> list[float]:
@@ -143,14 +168,6 @@ def construct_candidates(
             tumor_depth = int(tumor_depths[index])
             normal_depth = int(normal_depths[index])
 
-            enrichment_p = _fisher_p(
-                [[tumor_alt, tumor_depth - tumor_alt], [normal_alt, normal_depth - normal_alt]],
-                alternative="greater",
-            )
-            error_rate = error_rates.get(f"{ref}>{alt}", MIN_ERROR_RATE)
-            sequencing_error_p = (
-                float(binom.sf(tumor_alt - 1, tumor_depth, error_rate)) if tumor_alt else 1.0
-            )
             strand_p = _fisher_p([[tumor_alt_fwd, tumor_alt_rev], [tumor_ref_fwd, tumor_ref_rev]])
 
             tumor_alt_f1r2, tumor_alt_f2r1 = _pair(tumor.orientation, index, alternate_allele)
@@ -164,9 +181,6 @@ def construct_candidates(
                 if (tumor_alt_f1r2 + tumor_alt_f2r1) and (tumor_ref_f1r2 + tumor_ref_f2r1)
                 else 1.0
             )
-
-            tumor_ci = binomial_ci(tumor_alt, tumor_depth)
-            normal_ci = binomial_ci(normal_alt, normal_depth)
 
             row = {
                 "chrom": chromosome,
@@ -197,13 +211,7 @@ def construct_candidates(
                 "tumor_ref_f2r1": tumor_ref_f2r1,
                 "tumor_alt_f1r2": tumor_alt_f1r2,
                 "tumor_alt_f2r1": tumor_alt_f2r1,
-                "normal_af_ci_low": normal_ci[0],
-                "normal_af_ci_high": normal_ci[1],
-                "tumor_af_ci_low": tumor_ci[0],
-                "tumor_af_ci_high": tumor_ci[1],
-                "error_rate": error_rate,
-                "seq_p": sequencing_error_p,
-                "enrich_p": enrichment_p,
+                "error_rate": error_rates.get(f"{ref}>{alt}", MIN_ERROR_RATE),
                 "strand_p": strand_p,
                 "orient_p": orientation_p,
             }
@@ -214,6 +222,28 @@ def construct_candidates(
                     row[f"tumor_{label}_{metric}"] = value
             row.update(_rank_sums(tumor, index, alternate_allele, reference_allele))
             candidates.append(row)
+
+    # The allele-fraction statistics are vectorised: scipy's per-call overhead
+    # dominates at full depth, where nearly every position has some alternate.
+    def column(name):
+        return np.array([row[name] for row in candidates], dtype=np.int64)
+
+    tumor_alt, tumor_depth = column("tumor_ac"), column("tumor_dp")
+    normal_alt, normal_depth = column("normal_ac"), column("normal_dp")
+    error_rate = np.array([row["error_rate"] for row in candidates], dtype=np.float64)
+    tumor_ci = binomial_ci(tumor_alt, tumor_depth)
+    normal_ci = binomial_ci(normal_alt, normal_depth)
+    statistics = {
+        "tumor_af_ci_low": tumor_ci[0],
+        "tumor_af_ci_high": tumor_ci[1],
+        "normal_af_ci_low": normal_ci[0],
+        "normal_af_ci_high": normal_ci[1],
+        "seq_p": np.where(tumor_alt > 0, binom.sf(tumor_alt - 1, tumor_depth, error_rate), 1.0),
+        "enrich_p": _enrichment_p(tumor_alt, tumor_depth, normal_alt, normal_depth),
+    }
+    for name, values in statistics.items():
+        for row, value in zip(candidates, values.tolist(), strict=True):
+            row[name] = value
 
     q_values = benjamini_hochberg([row["enrich_p"] for row in candidates])
     for row, q_value in zip(candidates, q_values, strict=True):

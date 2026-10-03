@@ -13,6 +13,7 @@ from core.config import PipelineConfig
 from core.exceptions import InvalidInputError, MgatkError
 from core.pipeline import run_pipeline
 from data.blacklists import load_bed_positions
+from processing.readers import resolve_mito_contig
 from utils.utils import has_alignment_index, validate_bam_file, validate_barcode_file
 
 logger = logging.getLogger(__name__)
@@ -88,15 +89,11 @@ def check_alignment(path: str, mito_chr: str, reference_filename: str | None = N
     """Dry-run check: the contig and an index exist. Creates no files, indexes included."""
     try:
         with pysam.AlignmentFile(path, reference_filename=reference_filename) as alignment:
-            references = set(alignment.references)
+            references = alignment.references
     except Exception as exc:
         raise InvalidInputError(f"Cannot read alignment {path}: {exc}") from exc
 
-    if mito_chr not in references:
-        raise InvalidInputError(
-            f"Contig {mito_chr} is absent from {path}. Header contigs: "
-            f"{', '.join(sorted(references)[:10]) or 'none'}"
-        )
+    resolve_mito_contig(references, mito_chr, path)
     if not has_alignment_index(path):
         raise InvalidInputError(f"No index beside {path}; the run would have to build one")
 

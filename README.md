@@ -287,7 +287,13 @@ Three strategies are available everywhere:
 3. **`none`**: keep every otherwise eligible alignment. Use this for input that
    is already deduplicated or UMI-consensus collapsed.
 
-Deduplication is applied per cell.
+Deduplication is applied per cell, after the MAPQ, NH/NM, and missing-sequence
+filters, so a read that fails a filter can never displace a duplicate that passes.
+
+The mitochondrial contig is taken from the BAM header: `-g` names it, and when
+that name is a mitochondrial spelling (`chrM`, `MT`, `M`, `chrMT`) absent from the
+header, whichever of those the header carries is used instead. Its length also
+comes from the header, so hg19's 16,571 bp chrM is counted in full.
 
 ## How the single-cell scan works
 

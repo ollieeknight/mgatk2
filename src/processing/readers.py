@@ -6,7 +6,6 @@ Single-cell counting does not go through this module: see processing/pileup.py.
 import logging
 from pathlib import Path
 
-import numpy as np
 import pysam
 
 from core.config import PipelineConfig, SimpleRead
@@ -17,6 +16,23 @@ from processing.fragments import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Spellings of the mitochondrial contig across references.
+MITO_ALIASES = ("chrM", "MT", "M", "chrMT")
+
+
+def resolve_mito_contig(available, requested: str, source) -> str:
+    """The requested contig, or another mitochondrial spelling when it is one itself."""
+    if requested in available:
+        return requested
+    if requested in MITO_ALIASES:
+        for name in MITO_ALIASES:
+            if name in available:
+                return name
+    raise InvalidInputError(
+        f"Contig {requested} is absent from {source}. Header contigs: "
+        f"{', '.join(list(available)[:10]) or 'none'}"
+    )
 
 
 class BAMReader:
@@ -55,33 +71,20 @@ class BAMReader:
         except Exception as e:
             raise InvalidInputError(f"Cannot open {self.bam_path}: {e}") from e
 
-        available = list(bam.references)
-        # Requested name wins; the aliases are only a fallback.
-        for mito_name in [self.config.mito_chr, "chrM", "MT", "M", "chrMT"]:
-            if mito_name in available:
-                if self.config.mito_chr != mito_name:
-                    logger.info(f"Using mitochondrial chromosome: {mito_name}")
-                    self.config.mito_chr = mito_name
-                break
-        else:
-            bam.close()
-            raise InvalidInputError(
-                f"No mitochondrial contig in {self.bam_path}; header has: "
-                f"{', '.join(available[:10])}"
-            )
+        with bam:
+            mito_chr = resolve_mito_contig(bam.references, self.config.mito_chr, self.bam_path)
+            if mito_chr != self.config.mito_chr:
+                logger.info("Using mitochondrial chromosome: %s", mito_chr)
+            self.config.mito_chr = mito_chr
+            self.config.mito_length = bam.get_reference_length(mito_chr)
 
-        if self.check_barcode_tag:
-            for read in bam.fetch(self.config.mito_chr):
-                if read.has_tag(self.config.barcode_tag):
-                    break
-            else:
-                bam.close()
+            if self.check_barcode_tag and not any(
+                read.has_tag(self.config.barcode_tag) for read in bam.fetch(mito_chr)
+            ):
                 raise InvalidInputError(
-                    f"No {self.config.mito_chr} read in {self.bam_path} carries barcode tag "
+                    f"No {mito_chr} read in {self.bam_path} carries barcode tag "
                     f"'{self.config.barcode_tag}'; is this a single-cell BAM?"
                 )
-
-        bam.close()
 
     def collect_bulk_reads(self, deduplication: str) -> tuple[list, dict]:
         """Collect a paired-analysis sample and return fragments plus structured QC."""
@@ -146,7 +149,7 @@ class BAMReader:
                             is_reverse=read.is_reverse,
                             mapping_quality=read.mapping_quality,
                             query_sequence=read.query_sequence.encode("ascii"),
-                            query_qualities=np.array(read.query_qualities, dtype=np.int16),
+                            query_qualities=bytes(read.query_qualities),
                             cigar=cigar,
                             is_proper_pair=read.is_proper_pair,
                             is_paired=read.is_paired,

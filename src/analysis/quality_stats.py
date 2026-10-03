@@ -29,57 +29,22 @@ class QualityHistograms:
         self.baseq = np.zeros((length, 4, BASEQ_BINS), dtype=np.int32)
         self.mapq = np.zeros((length, 4, MAPQ_BINS), dtype=np.int32)
         self.distance = np.zeros((length, 4, DISTANCE_BINS), dtype=np.int32)
-        self._buffer: list[list[int]] = [[] for _ in range(7)]
-        self._buffered = 0
 
-    # Observations arrive one at a time from a Python loop; scalar NumPy
-    # indexing there would dominate runtime, so buffer and apply in blocks.
-    FLUSH_EVERY = 1_000_000
-
-    def add(
-        self,
-        position: int,
-        allele: int,
-        strand: int,
-        base_quality: int,
-        mapping_quality: int,
-        distance_from_end: int,
-        orientation: int,
-    ) -> None:
-        buffer = self._buffer
-        buffer[0].append(position)
-        buffer[1].append(allele)
-        buffer[2].append(strand)
-        buffer[3].append(base_quality)
-        buffer[4].append(mapping_quality)
-        buffer[5].append(distance_from_end)
-        buffer[6].append(orientation)
-        self._buffered += 1
-        if self._buffered >= self.FLUSH_EVERY:
-            self.flush()
-
-    def flush(self) -> None:
-        if not self._buffered:
-            return
-        position, allele, strand, baseq, mapq, distance, orientation = (
-            np.asarray(values, dtype=np.int64) for values in self._buffer
-        )
-        cell = position * 4 + allele
-
-        np.add.at(self.counts.reshape(-1), cell * 2 + strand, 1)
+    def add(self, observations: dict[str, np.ndarray]) -> None:
+        """Count a batch of observations from `fragment_observations`."""
+        cell = observations["position"] * 4 + observations["allele"]
+        orientation = observations["orientation"]
         oriented = orientation >= 0
-        if oriented.any():
-            np.add.at(self.orientation.reshape(-1), cell[oriented] * 2 + orientation[oriented], 1)
-        np.add.at(self.baseq.reshape(-1), cell * BASEQ_BINS + np.minimum(baseq, BASEQ_BINS - 1), 1)
-        np.add.at(self.mapq.reshape(-1), cell * MAPQ_BINS + np.minimum(mapq, MAPQ_BINS - 1), 1)
-        np.add.at(
-            self.distance.reshape(-1),
-            cell * DISTANCE_BINS + np.minimum(distance // DISTANCE_SCALE, DISTANCE_BINS - 1),
-            1,
+        _count(self.counts, cell * 2 + observations["strand"])
+        _count(self.orientation, cell[oriented] * 2 + orientation[oriented])
+        _count(
+            self.baseq, cell * BASEQ_BINS + np.minimum(observations["base_quality"], BASEQ_BINS - 1)
         )
-
-        self._buffer = [[] for _ in range(7)]
-        self._buffered = 0
+        _count(
+            self.mapq, cell * MAPQ_BINS + np.minimum(observations["mapping_quality"], MAPQ_BINS - 1)
+        )
+        distance_bin = np.minimum(observations["distance"] // DISTANCE_SCALE, DISTANCE_BINS - 1)
+        _count(self.distance, cell * DISTANCE_BINS + distance_bin)
 
     def depth(self) -> np.ndarray:
         return self.counts.sum(axis=(1, 2))
@@ -87,6 +52,11 @@ class QualityHistograms:
     def allele_counts(self) -> np.ndarray:
         """(length, 4) observations per allele, both strands."""
         return self.counts.sum(axis=2)
+
+
+def _count(target: np.ndarray, flat_index: np.ndarray) -> None:
+    flat = target.reshape(-1)
+    flat += np.bincount(flat_index, minlength=flat.size).astype(flat.dtype)
 
 
 def histogram_median(histogram: np.ndarray, scale: int = 1) -> float:

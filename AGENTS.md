@@ -57,7 +57,10 @@ in `processing/` or `file_io/writers.py`.
 - `tenx` default Signac-compatible text + alignment-start deduplication.
 - `call` treat every BAM in its input directory as one bulk sample.
 - Deduplication per cell, keyed on alignment start, strand, optionally template
-  length.
+  length. Runs after every read filter, never before: a failing read must not
+  claim a key and displace a passing duplicate.
+- chrM name and length come from the BAM header via `resolve_mito_contig`;
+  `mito_length` is never assumed to be 16,569.
 - CIGAR insertions advance query offset. Lose that = silently shift every base
   after insertion onto wrong reference position.
 - Tn5 cut sites record exactly one insertion per retained read, at read's
@@ -93,9 +96,10 @@ in `processing/` or `file_io/writers.py`.
   `--deduplication none`. Built-in coordinate dedup = fallback for unmarked
   input only, cruder than MarkDuplicates, degenerate to `(start, strand)` for
   orphans.
-- Evidence table build every FASTA position + raw strand-specific A/C/G/T
-  counts, but is in-memory only. Feed candidate construction + callable count.
-  Not an output.
+- Per-sample evidence = `QualityHistograms`, filled in vectorised batches by
+  `fragment_observations`. Never reintroduce a per-base Python object or
+  per-position dict table: that was the paired path's bottleneck. Candidate
+  statistics that scipy can take as arrays are computed as arrays.
 - Quality stats stored as per-allele histograms (`analysis/quality_stats.py`),
   never running sums. Pooled ref+alt mean cannot separate real allele from
   artefact — that was the pre-v1.3 mistake.

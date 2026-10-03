@@ -3,8 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy
-
 
 @dataclass(slots=True)
 class SimpleRead:
@@ -14,7 +12,7 @@ class SimpleRead:
     is_reverse: bool
     mapping_quality: int
     query_sequence: bytes
-    query_qualities: "numpy.ndarray"
+    query_qualities: bytes
     cigar: list[tuple[int, int]]
     is_proper_pair: bool = False
     is_paired: bool = False
@@ -22,22 +20,6 @@ class SimpleRead:
     query_name: str = ""
     is_read1: bool = False
     is_read2: bool = False
-
-    def get_aligned_pairs(self) -> list[tuple[int, int]]:
-        """(query_pos, ref_pos) for every aligned base; indels are skipped."""
-        pairs = []
-        ref_pos = self.reference_start
-        query_pos = 0
-        for op, length in self.cigar:
-            if op in (0, 7, 8):
-                pairs.extend((query_pos + i, ref_pos + i) for i in range(length))
-                query_pos += length
-                ref_pos += length
-            elif op in (1, 4):
-                query_pos += length
-            elif op in (2, 3):
-                ref_pos += length
-        return pairs
 
 
 @dataclass

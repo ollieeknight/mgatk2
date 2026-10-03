@@ -441,16 +441,38 @@ def test_assay_selects_the_report_before_metadata_inference():
     assert wants_tn5_report(barcode_metadata={"a": 1}, assay=None) is True
 
 
-def test_mito_alias_resolves_before_barcode_discovery(tmp_path, barcoded_bam):
-    """-g MT on a chrM BAM must resolve the contig before anything fetches it."""
+def test_mito_contig_and_length_come_from_the_bam(tmp_path, barcoded_bam):
+    """-g MT on a chrM BAM resolves before anything fetches it, at the header's length."""
     run_pipeline(
         str(barcoded_bam),
         str(tmp_path / "out"),
-        PipelineConfig(mito_chr="MT", mito_length=40, n_cores=1, min_mapq=0, min_baseq=0),
+        PipelineConfig(mito_chr="MT", n_cores=1, min_mapq=0, min_baseq=0),
         min_barcode_reads=1,
     )
 
-    assert (tmp_path / "out" / "output" / "counts.h5").exists()
+    with h5py.File(tmp_path / "out" / "output" / "counts.h5") as handle:
+        assert handle["A_fwd"].shape[0] == 40
+    # The dry run resolves the same alias rather than rejecting it.
+    result = CliRunner().invoke(
+        cli, ["run", "-i", str(barcoded_bam), "-g", "MT", "-o", str(tmp_path / "dry"), "--dry-run"]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_low_mapq_read_cannot_claim_a_duplicate_key(tmp_path, alignment_factory):
+    reference = tmp_path / "reference.fa"
+    reference.write_text(">chrM\n" + "A" * 40 + "\n")
+    duplicate = {"start": 0, "sequence": "A" * 10, "tags": {"CB": "cell-1"}}
+    bam = alignment_factory(
+        tmp_path / "mapq.bam",
+        reference,
+        [{"name": "low", "mapq": 5, **duplicate}, {"name": "high", "mapq": 60, **duplicate}],
+    )
+
+    result = scan_shard((str(bam), counting_config(min_mapq=30), ["cell-1"], 0))
+
+    assert result.n_reads.tolist() == [1]
+    assert result.duplicate_reads == 0
 
 
 def test_dry_run_creates_no_files(tmp_path, barcoded_bam):

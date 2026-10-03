@@ -140,25 +140,26 @@ class _Shard:
                     if nm is not None and nm > nm_max:
                         continue
 
-                if dedup:
-                    key = (read.reference_start << 1) | int(read.is_reverse)
-                    if use_fragment_length:
-                        key |= abs(read.template_length or 0) << 20
-                    cell_seen = seen[cell]
-                    if key in cell_seen:
-                        duplicates += 1
-                        continue
-                    cell_seen.add(key)
-
                 if read.mapping_quality < min_mapq:
                     continue
-
                 sequence = read.query_sequence
                 # No CIGAR means no aligned span: reference_end is None and the
                 # read contributes neither bases nor a Tn5 cut site.
                 cigar = read.cigartuples
                 if not sequence or not cigar:
                     continue
+
+                # Deduplicate only reads that passed every filter, as mgatk
+                # does, so a failing read can never claim a duplicate's key.
+                if dedup:
+                    key = (read.reference_start << 1) | int(read.is_reverse)
+                    if use_fragment_length:
+                        key |= abs(read.template_length or 0) << 32
+                    cell_seen = seen[cell]
+                    if key in cell_seen:
+                        duplicates += 1
+                        continue
+                    cell_seen.add(key)
 
                 # Counted only once the read is certain to contribute bases, so
                 # this stays equal to the Tn5 cut total.
