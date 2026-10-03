@@ -265,6 +265,7 @@ used no panel.
 -i, --input-fasta FILE   Reference FASTA, plain or .gz [required]
 -o, --output-fasta FILE  Output FASTA; gzipped when the name ends in .gz [required]
 -g, --genome TEXT        hg38, hg19, GRCh38, GRCh37, mm10, mm9, GRCm38, GRCm37 [required]
+-v, --verbose            Verbose logging
 ```
 
 ```bash
@@ -274,6 +275,8 @@ mgatk2 hardmask-fasta -i GRCh38.fa -o GRCh38.numt_masked.fa.gz -g hg38
 This masks nuclear NUMT regions only, so it takes no mitochondrial arguments.
 Run it before building your alignment index: reads of nuclear mitochondrial
 origin otherwise mismap onto chrM and quietly inflate heteroplasmy.
+[docs/cellranger_reference.md](docs/cellranger_reference.md) builds a masked
+Cell Ranger ARC reference for GRCh38 and GRCm38 end to end.
 
 ## Deduplication
 
@@ -390,7 +393,7 @@ record for no reader.
 
 There is no sidecar JSON. The whole QC record — parameters, input paths and read
 statistics, reference checksum, per-substitution error rates, depth quantiles,
-candidate and callable-position counts, mgatk2 version, git commit, and the
+candidate and callable-position counts, mgatk2 version, and the
 command line — is one `##mgatk2_qc=` header line holding a single JSON object,
 and it survives a `bcftools` round trip:
 
@@ -474,6 +477,15 @@ Other current limitations:
 - The bundled NUMT BEDs are nuclear-side masking resources, not mitochondrial
   blacklists. Use `--custom-blacklist` for a chrM-side BED.
 
+### Migrating paired output to v1.4.1
+
+`##mgatk2_qc` drops three fields that never varied, because shifted-reference
+input is not supported: `parameters.shifted_reference_supplied`,
+`reference.shifted_reference_supplied`, and `reference.standard_reference`.
+`circular_edge.bases` becomes `circular_edge_bases`; its `status` was always
+`CIRCULAR_EDGE_UNRESOLVED`, which the VCF filter already records. VCF records
+and the callable BED are unchanged.
+
 ### Migrating paired output from v1.3
 
 | v1.3 | v1.4 |
@@ -499,7 +511,8 @@ make            # format, lint, test, and run the fixtures end to end
 python -m build # wheel and source distribution
 ```
 
-CI repeats Ruff and the tests on Python 3.10–3.12 and builds both distributions.
+CI runs the same checks, plus vulture, on Python 3.10–3.13, and smoke-tests the
+built wheel.
 Tagged releases build and publish the Docker image. Maintainer notes and the
 invariants worth knowing before changing anything live in
 [AGENTS.md](AGENTS.md).

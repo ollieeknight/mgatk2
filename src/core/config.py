@@ -45,7 +45,6 @@ class PairedConfig:
     custom_blacklist: str | None = None
     autosomal_median_depth: float | None = None
     input_is_consensus: bool = False
-    shifted_reference_supplied: bool = False
     circular_edge_bases: int = 500
 
     def __post_init__(self) -> None:

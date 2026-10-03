@@ -205,8 +205,6 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             "chromosome": chromosome,
             "length": len(reference),
             "sha256": checksum,
-            "standard_reference": True,
-            "shifted_reference_supplied": config.shifted_reference_supplied,
         },
         "deduplication": config.deduplication,
         "snv_only": True,
@@ -216,14 +214,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             if config.custom_blacklist
             else "MAPQ_only_no_chrM_blacklist"
         ),
-        "circular_edge": {
-            "bases": config.circular_edge_bases,
-            "status": (
-                "SHIFTED_REFERENCE_SUPPLIED"
-                if config.shifted_reference_supplied
-                else "CIRCULAR_EDGE_UNRESOLVED"
-            ),
-        },
+        "circular_edge_bases": config.circular_edge_bases,
         "counts": {
             "evidence_positions": len(reference),
             "callable_positions": callable_positions,

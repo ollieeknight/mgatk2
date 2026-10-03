@@ -1,4 +1,4 @@
-# Cell Ranger reference building with hard-masked genomes
+# Building a NUMT-masked Cell Ranger ARC reference
 
 This guide shows how to build CellRanger-ARC reference genomes with NUMT-masked mitochondrial regions using mgatk2. We use CellRanger-ARC because it can function as both an ATAC and RNA reference.
 
@@ -113,20 +113,22 @@ mgatk2 hardmask-fasta \
 
 # Create CellRanger config
 config_in="${build}/config"
-echo """{
-    organism: \"Homo_sapiens\"
-    genome: [\"${genome}\"]
-    input_fasta: [\"${fasta_hardmasked}\"]
-    input_gtf: [\"${gtf_filtered}\"]
-    input_motifs: \"${motifs_modified}\"
-    non_nuclear_contigs: [\"chrM\"]
-}""" > "$config_in"
+cat > "$config_in" <<EOF
+{
+    organism: "Homo_sapiens"
+    genome: ["${genome}"]
+    input_fasta: ["${fasta_hardmasked}"]
+    input_gtf: ["${gtf_filtered}"]
+    input_motifs: "${motifs_modified}"
+    non_nuclear_contigs: ["chrM"]
+}
+EOF
 
 # Build CellRanger reference
 cellranger-arc mkref --ref-version="$version" \
     --config="$config_in" --nthreads=16
 
-rm -rf ${build} ${source}
+rm -rf "$build" "$source"
 ```
 
 
@@ -224,18 +226,20 @@ mgatk2 hardmask-fasta \
 
 # Create CellRanger config
 config_in="${build}/config"
-echo """{
-    organism: \"Mus_musculus\"
-    genome: [\"${genome}\"]
-    input_fasta: [\"${fasta_hardmasked}\"]
-    input_gtf: [\"${gtf_filtered}\"]
-    input_motifs: \"${motifs_modified}\"
-    non_nuclear_contigs: [\"chrM\"]
-}""" > "$config_in"
+cat > "$config_in" <<EOF
+{
+    organism: "Mus_musculus"
+    genome: ["${genome}"]
+    input_fasta: ["${fasta_hardmasked}"]
+    input_gtf: ["${gtf_filtered}"]
+    input_motifs: "${motifs_modified}"
+    non_nuclear_contigs: ["chrM"]
+}
+EOF
 
 # Build CellRanger reference
 cellranger-arc mkref --ref-version="$version" \
     --config="$config_in" --nthreads=16
 
-rm -rf ${build} ${source}
+rm -rf "$build" "$source"
 ```

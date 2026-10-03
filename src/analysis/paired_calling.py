@@ -134,7 +134,7 @@ def _pair(array, index: int, allele: int | None) -> tuple[int, int]:
 def unresolved_edge(position: int, length: int, config: PairedConfig) -> bool:
     """Within --circular-edge-bases of either end of a linear reference."""
     edge = config.circular_edge_bases
-    return not config.shifted_reference_supplied and (position <= edge or position > length - edge)
+    return position <= edge or position > length - edge
 
 
 def construct_candidates(

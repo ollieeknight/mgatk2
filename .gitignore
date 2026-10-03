@@ -1,54 +1,10 @@
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
-.local/
-.installed.cfg
-*.egg
-MANIFEST
+build/
+dist/
+.venv/
 .ruff_cache/
 .pytest_cache/
-.mypy_cache/
-.flake8
 .test-work/
-
-# Virtual environments
-.venv
-venv
-
-# PyInstaller
-*.manifest
-*.spec
-
-# macOS
 .DS_Store
-Icon
-._*
-.Spotlight-V100
-
-# IDEs
-.vscode/
-.project
-.settings/
-.data/
-scrna_realdata_output/
-
-# uv lockfile: this project installs with pip/setuptools, so the lock is local only
-uv.lock

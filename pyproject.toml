@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgatk2"
-version = "1.4.0"
-description = "Mitochondrial genome analysis toolkit for single-cell data"
+version = "1.4.1"
+description = "Mitochondrial genotyping for single-cell and paired bulk sequencing data"
 readme = "README.md"
 authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]
 license = "MIT"
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1", "pytest>=7", "ruff>=0.5", "setuptools>=77", "wheel"]
+dev = ["build>=1", "pytest>=7", "ruff>=0.5", "vulture>=2"]
 
 [project.urls]
 Repository = "https://github.com/ollieeknight/mgatk2"

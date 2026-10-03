@@ -255,6 +255,8 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
     assert qc["mgatk2_version"] == version("mgatk2")
     assert qc["reference"]["sha256"]
     assert qc["snv_only"] is True
+    assert qc["circular_edge_bases"] == 2
+    assert "shifted_reference_supplied" not in qc["parameters"]
     assert qc["counts"]["evidence_positions"] == 40
     assert qc["counts"]["callable_positions"] == result.callable_positions
     with gzip.open(result.outputs["callable_bed"], "rt") as bed:
