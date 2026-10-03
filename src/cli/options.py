@@ -7,9 +7,86 @@ import click
 logger = logging.getLogger(__name__)
 
 
-def _paired_quality_options(f):
-    """Shared paired evidence and threshold options."""
-    options = [
+def _apply(options):
+    def decorator(f):
+        for option in reversed(options):
+            f = option(f)
+        return f
+
+    return decorator
+
+
+_DEDUP_CHOICE = click.Choice(
+    ["alignment_and_fragment_length", "alignment_start", "none"], case_sensitive=False
+)
+
+# Destinations match PairedConfig fields, so the command passes them straight through.
+paired_options = _apply(
+    [
+        click.option(
+            "--tumor",
+            required=True,
+            type=click.Path(exists=True, dir_okay=False),
+            help="Tumour (query) BAM or CRAM",
+        ),
+        click.option(
+            "--normal",
+            required=True,
+            type=click.Path(exists=True, dir_okay=False),
+            help="Autologous normal (comparator) BAM or CRAM",
+        ),
+        click.option(
+            "--reference",
+            required=True,
+            type=click.Path(exists=True, dir_okay=False),
+            help="Indexed reference FASTA defining REF; also decodes CRAM input",
+        ),
+        click.option(
+            "--output",
+            "-o",
+            "output",
+            required=True,
+            type=click.Path(),
+            help="Output directory for the VCF, index, and callable BED",
+        ),
+        click.option(
+            "--sample-name",
+            required=True,
+            help="Filename prefix for the VCF, index, and callable BED",
+        ),
+        click.option(
+            "--genome",
+            "-g",
+            "mito_chr",
+            default="chrM",
+            show_default=True,
+            help="Mitochondrial chromosome name (e.g. chrM, MT, or M)",
+        ),
+        click.option(
+            "--quality",
+            "-q",
+            "min_baseq",
+            default=20,
+            type=int,
+            show_default=True,
+            help="Minimum base quality (Phred score)",
+        ),
+        click.option(
+            "--mapq",
+            "min_mapq",
+            default=20,
+            type=int,
+            show_default=True,
+            help="Minimum alignment/mapping quality",
+        ),
+        click.option(
+            "--min-distance-from-end",
+            "-e",
+            default=5,
+            type=int,
+            show_default=True,
+            help="Discard base observations within this many bases of either read end",
+        ),
         click.option(
             "--max-strand-bias",
             "-s",
@@ -22,171 +99,95 @@ def _paired_quality_options(f):
             ),
         ),
         click.option(
-            "--min-distance-from-end",
-            "-e",
+            "--deduplication",
+            "-d",
+            type=_DEDUP_CHOICE,
+            default="alignment_and_fragment_length",
+            show_default=True,
+            help=(
+                "Coordinate deduplication fallback for unmarked input. "
+                "Use none for already-deduplicated or UMI-consensus input."
+            ),
+        ),
+        click.option(
+            "--min-tumor-depth",
+            default=10,
+            type=int,
+            show_default=True,
+            help="Tumour depth below this is flagged LOW_TUMOR_DEPTH and is not callable",
+        ),
+        click.option(
+            "--min-normal-depth",
             default=5,
             type=int,
             show_default=True,
-            help="Discard base observations within this many bases of either read end",
+            help="Normal depth below this is flagged LOW_NORMAL_DEPTH and is not callable",
         ),
         click.option(
-            "--mapq",
-            "min_mapq",
-            default=20,
+            "--min-alt-observations",
+            default=3,
             type=int,
             show_default=True,
-            help="Minimum alignment/mapping quality",
+            help="Fewer tumour alternate observations than this is flagged LOW_ALT_OBSERVATIONS",
         ),
         click.option(
-            "--quality",
-            "-q",
-            "base_qual",
-            default=20,
+            "--min-tumor-af",
+            default=0.005,
+            type=float,
+            show_default=True,
+            help="Tumour allele fraction below this is flagged LOW_TUMOR_AF",
+        ),
+        click.option(
+            "--max-normal-af",
+            default=0.01,
+            type=float,
+            show_default=True,
+            help="Normal allele fraction above this is flagged HIGH_NORMAL_AF",
+        ),
+        click.option(
+            "--custom-blacklist",
+            default=None,
+            type=click.Path(exists=True, dir_okay=False),
+            help="BED of chrM positions to flag BLACKLIST and exclude from callable territory",
+        ),
+        click.option(
+            "--autosomal-median-depth",
+            default=None,
+            type=float,
+            help=(
+                "Median autosomal depth of the tumour. Enables the POSSIBLE_NUMT filter, "
+                "which flags alternate support a single-copy NuMT could account for."
+            ),
+        ),
+        click.option(
+            "--circular-edge-bases",
+            default=500,
             type=int,
             show_default=True,
-            help="Minimum base quality (Phred score)",
+            help=(
+                "Bases at each end of a linear mitochondrial reference to flag "
+                "CIRCULAR_EDGE_UNRESOLVED and exclude from callable territory"
+            ),
+        ),
+        click.option(
+            "--input-is-consensus",
+            is_flag=True,
+            help="Declare upstream UMI-consensus inputs (requires --deduplication none)",
+        ),
+        click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging"),
+        click.option(
+            "--dry-run",
+            is_flag=True,
+            help=(
+                "Validate the configuration, open both alignments, and check the "
+                "mitochondrial contig and index are present, then exit"
+            ),
         ),
     ]
-    for option in options:
-        f = option(f)
-    return f
+)
 
 
-def paired_options(f):
-    """Options for paired tumour/normal mitochondrial evidence analysis."""
-    f = click.option(
-        "--dry-run",
-        is_flag=True,
-        help=(
-            "Validate the configuration, open both alignments, and check the "
-            "mitochondrial contig and index are present, then exit"
-        ),
-    )(f)
-    f = click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")(f)
-    f = click.option(
-        "--input-is-consensus",
-        is_flag=True,
-        help="Declare upstream UMI-consensus inputs (requires --deduplication none)",
-    )(f)
-    f = click.option(
-        "--circular-edge-bases",
-        default=500,
-        type=int,
-        show_default=True,
-        help=(
-            "Bases at each end of a linear mitochondrial reference to flag "
-            "CIRCULAR_EDGE_UNRESOLVED and exclude from callable territory"
-        ),
-    )(f)
-    f = click.option(
-        "--autosomal-median-depth",
-        default=None,
-        type=float,
-        help=(
-            "Median autosomal depth of the tumour. Enables the POSSIBLE_NUMT filter, "
-            "which flags alternate support a single-copy NuMT could account for."
-        ),
-    )(f)
-    f = click.option(
-        "--custom-blacklist",
-        default=None,
-        type=click.Path(exists=True, dir_okay=False),
-        help="BED of chrM positions to flag BLACKLIST and exclude from callable territory",
-    )(f)
-    f = click.option(
-        "--max-normal-af",
-        default=0.01,
-        type=float,
-        show_default=True,
-        help="Normal allele fraction above this is flagged HIGH_NORMAL_AF",
-    )(f)
-    f = click.option(
-        "--min-tumor-af",
-        default=0.005,
-        type=float,
-        show_default=True,
-        help="Tumour allele fraction below this is flagged LOW_TUMOR_AF",
-    )(f)
-    f = click.option(
-        "--min-alt-observations",
-        default=3,
-        type=int,
-        show_default=True,
-        help="Fewer tumour alternate observations than this is flagged LOW_ALT_OBSERVATIONS",
-    )(f)
-    f = click.option(
-        "--min-normal-depth",
-        default=5,
-        type=int,
-        show_default=True,
-        help="Normal depth below this is flagged LOW_NORMAL_DEPTH and is not callable",
-    )(f)
-    f = click.option(
-        "--min-tumor-depth",
-        default=10,
-        type=int,
-        show_default=True,
-        help="Tumour depth below this is flagged LOW_TUMOR_DEPTH and is not callable",
-    )(f)
-    f = click.option(
-        "--deduplication",
-        "-d",
-        type=click.Choice(
-            ["alignment_and_fragment_length", "alignment_start", "none"],
-            case_sensitive=False,
-        ),
-        default="alignment_and_fragment_length",
-        show_default=True,
-        help=(
-            "Coordinate deduplication fallback for unmarked input. "
-            "Use none for already-deduplicated or UMI-consensus input."
-        ),
-    )(f)
-    f = _paired_quality_options(f)
-    f = click.option(
-        "--genome",
-        "-g",
-        "mito_genome",
-        default="chrM",
-        show_default=True,
-        help="Mitochondrial chromosome name (e.g. chrM, MT, or M)",
-    )(f)
-    f = click.option(
-        "--sample-name",
-        required=True,
-        help="Filename prefix for the VCF, index, and callable BED",
-    )(f)
-    f = click.option(
-        "--output",
-        "-o",
-        "output_dir",
-        required=True,
-        type=click.Path(),
-        help="Output directory for the VCF, index, and callable BED",
-    )(f)
-    f = click.option(
-        "--reference",
-        required=True,
-        type=click.Path(exists=True, dir_okay=False),
-        help="Indexed reference FASTA defining REF; also decodes CRAM input",
-    )(f)
-    f = click.option(
-        "--normal",
-        required=True,
-        type=click.Path(exists=True, dir_okay=False),
-        help="Autologous normal (comparator) BAM or CRAM",
-    )(f)
-    return click.option(
-        "--tumor",
-        required=True,
-        type=click.Path(exists=True, dir_okay=False),
-        help="Tumour (query) BAM or CRAM",
-    )(f)
-
-
-# Every single-cell command counts bases the same way; only the presets differ.
-# `run` targets filtered HDF5, `tenx` reproduces original mgatk behaviour, and
-# `call` treats each BAM in a directory as one bulk sample.
+# Every single-cell command counts bases the same way; only these defaults differ.
 _PRESETS = {
     "run": {
         "output_format": "hdf5",
@@ -204,15 +205,8 @@ _PRESETS = {
         "min_reads": 0,
         "min_distance_from_end": 0,
     },
-    "call": {
-        "output_format": "hdf5",
-        "dedup_mode": "alignment_and_fragment_length",
-        "base_qual": 20,
-        "min_mapq": 30,
-        "min_reads": 1,
-        "min_distance_from_end": 5,
-    },
 }
+_PRESETS["call"] = _PRESETS["run"]
 
 
 # Assay presets sit between the command preset and the user's explicit flags:
@@ -226,9 +220,8 @@ ASSAY_PRESETS: dict[str, dict] = {
         "barcode_tag": "CB",
     },
     "scrna": {
-        # Measured against real 10x GEX data: alignment_start collapsed 17.8M
-        # reads where true (CB, UMI) collapse gives 7.2M -- a 2.49x overcount.
-        # UMI dedup falls back to alignment_start per-read when UB is absent.
+        # Measured on real 10x GEX chrM: alignment_start kept 17.8M reads where
+        # (CB, UMI) collapse gives 7.2M, merging molecules that share a start.
         "dedup_mode": "umi",
         "compute_tn5": False,
         "min_distance_from_end": 5,
@@ -264,8 +257,6 @@ def apply_assay_preset(assay: str | None, values: dict, explicit: set[str]) -> d
 
     resolved = dict(values)
     for name, preset_value in ASSAY_PRESETS[assay].items():
-        if name not in resolved:
-            continue
         if name not in explicit:
             resolved[name] = preset_value
         elif resolved[name] != preset_value:
@@ -280,12 +271,7 @@ def apply_assay_preset(assay: str | None, values: dict, explicit: set[str]) -> d
 
 
 def singlecell_options(preset: str):
-    """Build the shared single-cell option surface for one command preset.
-
-    `run`, `tenx`, and `call` previously carried three verbatim copies of the
-    same seventeen options, which is how they drifted apart on defaults, help
-    text, and which filters were exposed at all.
-    """
+    """The single-cell option surface shared by `run`, `tenx`, and `call`."""
     defaults = _PRESETS[preset]
     is_bulk = preset == "call"
 
@@ -400,22 +386,6 @@ def singlecell_options(preset: str):
         ),
         click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging"),
         click.option(
-            "--memory",
-            "-m",
-            "max_memory",
-            default=128,
-            type=float,
-            show_default=True,
-            help=(
-                # A bulk sample is one pseudo-cell, so it never shards and the
-                # budget can never bind.
-                "Accepted for compatibility; a bulk sample is a single cell, so "
-                "the budget never binds"
-                if is_bulk
-                else "Memory budget in GB shared by concurrent shard workers; sets shard width"
-            ),
-        ),
-        click.option(
             "--quality",
             "-q",
             "base_qual",
@@ -435,7 +405,16 @@ def singlecell_options(preset: str):
     ]
 
     if not is_bulk:
-        options.append(
+        options += [
+            click.option(
+                "--memory",
+                "-m",
+                "max_memory",
+                default=128,
+                type=float,
+                show_default=True,
+                help="Memory budget in GB shared by concurrent shard workers; sets shard width",
+            ),
             click.option(
                 "--min-reads",
                 "-c",
@@ -447,8 +426,8 @@ def singlecell_options(preset: str):
                     "Minimum deduplicated reads per cell to include in analysis. "
                     "Floored at 1, so 0 and 1 behave identically."
                 ),
-            )
-        )
+            ),
+        ]
 
     options += [
         click.option(
@@ -499,8 +478,8 @@ def singlecell_options(preset: str):
             default=defaults["dedup_mode"],
             show_default=True,
             help=(
-                "Deduplication strategy. umi collapses reads sharing a cell + UMI "
-                "(UB tag), falling back to alignment_start when the tag is absent."
+                "Deduplication strategy. umi collapses reads sharing a cell and UB tag "
+                "within 500bp, falling back to alignment_start when the tag is absent."
             ),
         ),
         click.option(
@@ -529,10 +508,4 @@ def singlecell_options(preset: str):
             ),
         ),
     ]
-
-    def decorator(f):
-        for option in reversed(options):
-            f = option(f)
-        return f
-
-    return decorator
+    return _apply(options)

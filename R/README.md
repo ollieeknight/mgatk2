@@ -1,62 +1,58 @@
-# R analysis scripts for mgatk2 HDF5 output
+# R helpers for mgatk2 HDF5 output
 
-## Usage
+Requires hdf5r, Matrix, dplyr, and tibble; the example script also uses ggplot2.
 
 ```r
 source("R/mgatk2_functions.R")
-library(hdf5r)
-library(dplyr)
 
-mgatk_data <- read_mgatk_hdf5("path/to/output_directory")
+data <- read_mgatk_hdf5("path/to/output_directory")
+data <- filter_cells_by_coverage(data, min_mean_depth = 10, min_coverage_breadth = 0.9)
+data <- recompute_reference_alleles(data)
 
-variants <- identify_variants(mgatk_data, min_cells = 5, min_strand_cor = 0.65, min_vmr = 0.01)
-allele_freq <- calculate_allele_freq(mgatk_data, variants)
-
-close_mgatk_hdf5(mgatk_data)
+variants <- identify_variants(data, min_cells = 5, min_strand_cor = 0.65, min_vmr = 0.01)
+allele_freq <- calculate_allele_freq(data, variants)
 ```
 
-`read_mgatk_hdf5` leaves the count matrices on disk and returns:
+`R/mgatk2_qc_plots.R` runs the same steps with QC plots.
 
-- `barcodes`, `positions` (`1:16569`), `refallele` (one base per position, `N` where the pipeline never saw coverage)
-- `mean_depth`, `median_depth`, `max_depth`, `genome_coverage` (fraction of positions covered), `total_bases` — one value per cell, named by barcode
-- `barcode_metadata` — tibble of per-cell metrics if the run had a barcode metadata file, otherwise `NULL`
-- `counts`, `metadata` — the open `H5File` handles
-- `cells` — indices into the files, so `subset_mgatk_barcodes` and `filter_cells_by_coverage` are free
+`read_mgatk_hdf5` returns a list of:
 
-Call `close_mgatk_hdf5` when done.
-
-Every function that touches a matrix streams it in blocks of 512 cells, which is how the files are chunked. Peak memory is a few hundred MB regardless of run size. Set `mgatk_data$block_size` to change it.
+- `mats`: sparse cells x positions matrices `A_fwd` ... `T_rev`, `tn5_cuts_fwd`, `tn5_cuts_rev`, and `coverage`
+- `cells`: one row per cell with `barcode`, `mean_depth`, `median_depth`, `max_depth`, `coverage_breadth`, `total_bases`, and any `barcode_metadata` columns
+- `refallele`: one base per position, `N` where nothing was observed
 
 ## Functions
 
 | Function | Notes |
 | --- | --- |
-| `read_mgatk_hdf5(dir)` | Opens the pair of HDF5 files. |
-| `close_mgatk_hdf5(data)` | Closes them. |
-| `subset_mgatk_barcodes(data, barcodes)` | Restricts to matching barcodes; no data is read. |
-| `filter_cells_by_coverage(data, min_mean_coverage, min_coverage_breadth)` | Thresholds are required — the sensible values differ by assay. |
-| `calculate_cell_coverage_stats(data, deep = FALSE)` | Uses the pipeline's own per-cell numbers; `deep = TRUE` adds the 10x/50x counts and CV, which need a full pass. |
-| `calculate_position_coverage_stats(data)` | Per-position depth summary. |
-| `calculate_strand_coverage_stats(data)` | Forward/reverse balance per position. |
-| `calculate_transposition_stats(data)` | Tn5 cut sites per position. |
-| `identify_variants(data, ...)` | One streaming pass; returns the usual mgatk statistics. |
-| `calculate_allele_freq(data, variants)` | Dense variants x cells matrix; `as(x, "sparseMatrix")` if you need it sparse. |
+| `read_mgatk_hdf5(dir)` | Loads one run. |
+| `rbind_mgatk_data(...)` | Combines runs on the same reference. |
+| `subset_cells(data, keep)` | Keeps cells by logical or index vector. |
+| `subset_mgatk_barcodes(data, barcodes)` | Keeps the named barcodes. |
+| `filter_cells_by_coverage(data, min_mean_depth, min_coverage_breadth)` | Thresholds differ by assay, so both are required. |
+| `recompute_reference_alleles(data)` | The reference is inferred from aggregate counts; refresh it after subsetting. |
+| `position_stats(data)` | Per-position depth, dropout, strand bias, and Tn5 cuts. |
+| `identify_variants(data, ...)` | mgatk/Signac statistics: mean, VMR, strand correlation, cells detected. |
+| `calculate_allele_freq(data, variants)` | Sparse variants x cells allele frequencies. |
 
-`identify_variants` follows Signac's conventions: the strand correlation uses cells carrying the alt allele on either strand, and VMR is the variance of the per-cell allele frequency over the bulk frequency plus a `1e-11` pseudocount. `stabilise_variance = TRUE` holds cells below `low_coverage_threshold` at the bulk frequency.
+`identify_variants` follows Signac: VMR is the variance of per-cell allele
+frequency over the bulk frequency plus `1e-11`; `stabilise_variance = TRUE`
+(the default) holds cells below `low_coverage_threshold` at the bulk frequency;
+strand correlation is taken over cells carrying the allele on either strand.
+For RNA, where strand carries no signal, pass `min_strand_cor = -1`.
 
+## HDF5 layout
 
-## HDF5 file structure
+Both files live in `output/` and store matrices as positions x cells, chunked
+128 cells wide; hdf5r reads them transposed, as cells x positions.
 
-Both files live in `output/` and store matrices as (16569 positions x cells); hdf5r reads them back transposed, as (cells x 16569 positions).
+- `counts.h5`: `A_fwd`, `A_rev`, `C_fwd`, `C_rev`, `G_fwd`, `G_rev`, `T_fwd`,
+  `T_rev`, `tn5_cuts_fwd`, `tn5_cuts_rev` (`uint16`), and `barcode`.
+  Attributes `n_cells`, `n_positions`, `mito_chr`.
+- `metadata.h5`: `coverage` (`uint16`), per-cell `mean_depth`, `median_depth`,
+  `genome_coverage`, `total_bases` (`float32`) and `max_depth` (`uint16`),
+  `reference` (one byte per position), and an optional `barcode_metadata/`
+  group. Attributes `mito_chr`, `mito_length`.
 
-### counts.h5
-
-`A_fwd`, `A_rev`, `C_fwd`, `C_rev`, `G_fwd`, `G_rev`, `T_fwd`, `T_rev`, `tn5_cuts_fwd`, `tn5_cuts_rev` (all `uint16`), plus `barcode` (string array, note the singular name). Attributes: `n_cells`, `n_positions`, `mito_chr`.
-
-### metadata.h5
-
-`coverage` (`uint16`), the per-cell vectors `mean_depth`, `median_depth`, `genome_coverage`, `total_bases` (`float32`) and `max_depth` (`uint16`), `reference` (`S1`, one byte per position), and the optional `barcode_metadata/` group with one dataset per metadata column. Attributes: `mito_chr`, `mito_length`.
-
-Matrices are chunked at 128 cells x all positions, so reading blocks of cells is cheap and reading single positions is not.
-
-`genome_coverage` is a fraction, matching the `coverage_breadth` column of `qc/cell_stats.csv`. Files written before this change (including `scrna_realdata_output/`) store it as a percentage; divide by 100 before passing thresholds to `filter_cells_by_coverage`.
+`genome_coverage` is a fraction, matching `coverage_breadth` in
+`qc/cell_stats.csv`.

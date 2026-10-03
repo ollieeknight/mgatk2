@@ -57,21 +57,20 @@ in `processing/` or `file_io/writers.py`.
 - `tenx` default Signac-compatible text + alignment-start deduplication.
 - `call` treat every BAM in its input directory as one bulk sample.
 - Deduplication per cell, keyed on alignment start, strand, optionally template
-  length, or — `umi` mode — cell barcode + `UB` tag, chained forward through
-  the coordinate-sorted stream and bounded to `UMI_DEDUP_WINDOW` (500bp,
-  `processing/pileup.py`). UMI alone is not a safe key on a 16.6kb contig:
-  two unrelated molecules can share a 12bp UMI by chance, and an unbounded key
-  collapsed them into one observation, silently dropping the other (found on
-  a synthetic two-read case, positions 100 and 9000 apart, before this
-  shipped — 53,314 reads recovered on the same real 10x run once bounded).
-  `umi` falls back to the alignment-start key per-read when `UB` is absent, so
-  a read is never silently dropped for lacking the tag.
-- `scrna` preset uses `umi` dedup, not `alignment_start`. Measured against real
-  10x GEX data (chrM, 22,037 cellbender-called cells): `alignment_start`
-  collapsed to 17.8M "unique" reads where true `(CB, UB)` collapse gives 7.2M
-  — a 2.49x overcount, because independent molecules starting at the same base
-  were wrongly merged. `tests/test_single_cell.py` pins the preset and the two
-  collapse/no-collapse cases (`test_umi_dedup_*`).
+  length. Runs after every read filter, never before: a failing read must not
+  claim a key and displace a passing duplicate.
+- `umi` mode keys on cell + `UB` tag + strand, chained forward through the
+  coordinate-sorted stream and bounded to `UMI_DEDUP_WINDOW` (500bp,
+  `processing/pileup.py`). UMI alone not safe key on 16.6kb contig: two
+  unrelated molecules share 12bp UMI by chance, and unbounded key silently
+  dropped one (53,314 reads recovered on one real 10x run once bounded). Read
+  without `UB` fall back to start + strand, never dropped. Single-cell only.
+- `scrna` preset uses `umi`. On real 10x GEX chrM (22,037 cells)
+  `alignment_start` kept 17.8M reads where `(CB, UB)` collapse gives 7.2M — a
+  2.49x overcount from merging molecules that share a start.
+  `test_umi_dedup_*` pin collapse, no-collapse, fallback, and the window.
+- chrM name and length come from the BAM header via `resolve_mito_contig`;
+  `mito_length` is never assumed to be 16,569.
 - CIGAR insertions advance query offset. Lose that = silently shift every base
   after insertion onto wrong reference position.
 - Tn5 cut sites record exactly one insertion per retained read, at read's
@@ -85,13 +84,10 @@ in `processing/` or `file_io/writers.py`.
   so coordinate deduplication collapse whole amplicon to one read per cell.
   `tapestri` preset therefore force `none`. `tests/test_single_cell.py` pin both
   the preset and the destruction it prevent.
-- `tapestri` `barcode_tag: "RG"` verified against a real run (Kiel,
-  `2408_Timo_Tapestri_H12/VL00817_outs/HC12_run1.cells.bam`): 5,218 distinct
-  `@RG` lines, `ID` and `SM` both an 18bp cell barcode, one `RG:Z:` value per
-  read matching a header `@RG`. Not per-sample/lane. `mgatk2 run --assay
-  tapestri` on that BAM extracted exactly 5,218 barcodes from the tag and kept
-  all 42,213,220 chrM reads (dedup off, as expected for amplicon data);
-  mean_depth p50 69x, genome_coverage p50 88% — sane, unimodal.
+- `tapestri` `barcode_tag: "RG"` verified on a real run: 5,218 `@RG` lines,
+  `ID`/`SM` each an 18bp cell barcode, one `RG:Z:` per read. `run --assay
+  tapestri` extracted all 5,218 barcodes and kept all 42,213,220 chrM reads;
+  mean_depth p50 69x, genome_coverage p50 88%.
 - `--panel-bed` scope `coverage_breadth` to targeted bases. `mean_depth` and
   `median_depth` stay whole-contig, so they remain comparable across runs.
 - `--max-strand-bias` means `|forward - reverse| / total` everywhere, single-cell
@@ -101,7 +97,7 @@ in `processing/` or `file_io/writers.py`.
 - HDF5 matrices stored positions × cells; `hdf5r` read transposed cells ×
   positions shape in R.
 - Single-cell reference allele inferred from aggregate counts.
-- QC report choice go through `MtDNAPipeline.wants_tn5_report`. `--assay` decide
+- QC report choice go through `core.pipeline.wants_tn5_report`. `--assay` decide
   directly; without it, fall back to historic inference (barcode metadata come
   only from a 10x scATAC `singlecell.csv`).
 
@@ -114,12 +110,13 @@ in `processing/` or `file_io/writers.py`.
   `--deduplication none`. Built-in coordinate dedup = fallback for unmarked
   input only, cruder than MarkDuplicates, degenerate to `(start, strand)` for
   orphans.
-- Evidence table build every FASTA position + raw strand-specific A/C/G/T
-  counts, but is in-memory only. Feed candidate construction + callable count.
-  Not an output.
+- Per-sample evidence = `QualityHistograms`, filled in vectorised batches by
+  `fragment_observations`. Never reintroduce a per-base Python object or
+  per-position dict table: that was the paired path's bottleneck. Candidate
+  statistics that scipy can take as arrays are computed as arrays.
 - Quality stats stored as per-allele histograms (`analysis/quality_stats.py`),
   never running sums. Pooled ref+alt mean cannot separate real allele from
-  artefact — that was the schema 1.0 mistake.
+  artefact — that was the pre-v1.3 mistake.
 - Candidate pass = two independent tests. `EP`/`EQ` = tumour enriched over
   normal. `SEQP` vs `ERR` = tumour alt above learned substitution error rate.
   Fisher alone assume shared error rate, so depth asymmetry alone look
@@ -155,9 +152,9 @@ in `processing/` or `file_io/writers.py`.
   may filter mitochondrial positions. `--autosomal-median-depth` enable
   `POSSIBLE_NUMT`.
 
-Paired schema version live in `PairedConfig.schema_version` (single field —
-evidence/candidate/qc versions collapsed when the tables stopped being outputs).
-Any field or semantic change need schema-version decision + tests.
+Paired output version = release version (`##source`, `mgatk2_version` in
+`##mgatk2_qc`). No separate schema number. Any field or semantic change need
+README migration note + tests.
 
 Scope: mitochondrial heteroplasmy evidence generator, not general somatic
 WES/WGS caller. Deliberately no local realignment, no assembly, no indels, no
@@ -197,7 +194,7 @@ revisited, must be site-specific beta-binomial background model
   installs its own root-logger file handler via `setup_file_logging`.
 - `qc/run_config.json` and `qc/summary.txt` carry the same run metadata: JSON
   for machines, text for people. The HTML report reads the JSON, so nothing
-  parses the summary's prose. `paired` still writes no sidecar JSON; its
+  parses the summary's prose. `paired` writes no sidecar JSON; its
   provenance lives in the VCF header.
 - The HTML report reads each HDF5 file once and sums positions x cells in
   column blocks, then passes arrays to the plot functions. No plot may open a

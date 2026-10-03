@@ -4,26 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import subprocess
 import sys
-import time
 from dataclasses import asdict, dataclass
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
 import pysam
 
-from analysis.paired_calling import MIN_ERROR_RATE, construct_candidates
+from analysis.paired_calling import MIN_ERROR_RATE, construct_candidates, unresolved_edge
 from analysis.quality_stats import BASE_INDEX, QualityHistograms
 from core.config import PairedConfig, PipelineConfig
 from core.exceptions import InvalidInputError
-from data.blacklists import load_blacklist_positions
+from data.blacklists import load_bed_positions
 from file_io.paired_writers import write_paired_outputs
-from processing.fragments import resolve_fragment_observations
-from processing.readers import BAMReader
+from processing.fragments import fragment_observations
+from processing.readers import BAMReader, resolve_mito_contig
 
 logger = logging.getLogger(__name__)
+
+FRAGMENTS_PER_CHUNK = 100_000
 
 
 @dataclass
@@ -46,19 +46,7 @@ def load_fasta_reference(reference_path: str, requested_chromosome: str) -> tupl
         raise InvalidInputError(f"Reference FASTA index not found: {path}.fai")
     try:
         with pysam.FastaFile(str(path)) as fasta:
-            chromosome = next(
-                (
-                    name
-                    for name in (requested_chromosome, "chrM", "MT", "M", "chrMT")
-                    if name in fasta.references
-                ),
-                None,
-            )
-            if chromosome is None:
-                raise InvalidInputError(
-                    f"No mitochondrial chromosome found in {path}; available: "
-                    f"{', '.join(fasta.references[:10])}"
-                )
+            chromosome = resolve_mito_contig(fasta.references, requested_chromosome, path)
             sequence = fasta.fetch(chromosome).upper()
     except InvalidInputError:
         raise
@@ -93,36 +81,18 @@ def collect_sample_evidence(
         )
 
     histograms = QualityHistograms(reference_length)
-    overlap_totals = {
-        "overlap_positions": 0,
-        "overlap_agreements": 0,
-        "overlap_disagreements": 0,
-    }
-    orientation_index = {"F1R2": 0, "F2R1": 1}
-    for fragment in fragments:
-        observations, overlap = resolve_fragment_observations(
-            fragment, config.min_baseq, config.min_distance_from_end
+    overlap_totals = {"overlap_positions": 0, "overlap_agreements": 0, "overlap_disagreements": 0}
+    # Chunked so the per-base arrays stay bounded at any depth.
+    for start in range(0, len(fragments), FRAGMENTS_PER_CHUNK):
+        observations, overlap = fragment_observations(
+            fragments[start : start + FRAGMENTS_PER_CHUNK],
+            config.min_baseq,
+            config.min_distance_from_end,
         )
+        in_range = observations["position"] < reference_length
+        histograms.add({name: values[in_range] for name, values in observations.items()})
         for key in overlap_totals:
-            overlap_totals[key] += int(overlap[key])
-        for position in overlap["disagreement_positions"]:
-            if 0 <= position < reference_length:
-                histograms.overlap_disagreements[position] += 1
-        for position, observation in observations.items():
-            if not 0 <= position < reference_length:
-                continue
-            histograms.add(
-                position,
-                BASE_INDEX[observation.base],
-                int(observation.is_reverse),
-                observation.base_quality,
-                observation.mapping_quality,
-                observation.distance_from_end,
-                orientation_index.get(observation.orientation, -1),
-            )
-            if observation.clipped:
-                histograms.clipped[position] += 1
-    histograms.flush()
+            overlap_totals[key] += overlap[key]
     stats.update(overlap_totals)
     stats["counted_observations"] = int(histograms.depth().sum())
     return histograms, stats
@@ -164,57 +134,22 @@ def estimate_error_rates(
     return rates
 
 
-def build_position_evidence(
-    chromosome: str,
+def callable_mask(
     reference: str,
     tumor: QualityHistograms,
     normal: QualityHistograms,
     config: PairedConfig,
     blacklist: set[int],
-) -> list[dict]:
-    """Build the all-position evidence table the caller consumes.
-
-    Not an output any more: the VCF is the only artefact, and this feeds
-    candidate construction and the callable-position count in QC.
-    """
-    rows = []
+) -> np.ndarray:
+    """Positions deep enough in both samples, off the blacklist, and off the edges."""
     length = len(reference)
-    samples = (("normal", normal), ("tumor", tumor))
-    depths = {name: histograms.depth() for name, histograms in samples}
-
-    for position, ref in enumerate(reference, start=1):
-        index = position - 1
-        tumor_depth = int(depths["tumor"][index])
-        normal_depth = int(depths["normal"][index])
-        unresolved_edge = not config.shifted_reference_supplied and (
-            position <= config.circular_edge_bases or position > length - config.circular_edge_bases
-        )
-        row = {
-            "chrom": chromosome,
-            "pos": position,
-            "ref": ref,
-            "normal_dp": normal_depth,
-            "tumor_dp": tumor_depth,
-            "normal_clipped": int(normal.clipped[index]),
-            "tumor_clipped": int(tumor.clipped[index]),
-            "normal_overlap_disagreements": int(normal.overlap_disagreements[index]),
-            "tumor_overlap_disagreements": int(tumor.overlap_disagreements[index]),
-            # Per-sample callability is reproducible from the depth columns and
-            # the recorded thresholds, so only the joint verdict is kept, and
-            # only to drive the callable BED.
-            "_joint_callable": (
-                tumor_depth >= config.min_tumor_depth
-                and normal_depth >= config.min_normal_depth
-                and position not in blacklist
-                and not unresolved_edge
-            ),
-        }
-        for name, histograms in samples:
-            for base, base_index in BASE_INDEX.items():
-                row[f"{name}_{base.lower()}_fwd"] = int(histograms.counts[index, base_index, 0])
-                row[f"{name}_{base.lower()}_rev"] = int(histograms.counts[index, base_index, 1])
-        rows.append(row)
-    return rows
+    positions = np.arange(1, length + 1)
+    callable_ = (tumor.depth() >= config.min_tumor_depth) & (
+        normal.depth() >= config.min_normal_depth
+    )
+    callable_ &= ~np.isin(positions, list(blacklist))
+    callable_ &= ~np.array([unresolved_edge(p, length, config) for p in positions], dtype=bool)
+    return callable_
 
 
 def _depth_summary(histograms: QualityHistograms) -> dict:
@@ -228,45 +163,25 @@ def _depth_summary(histograms: QualityHistograms) -> dict:
     }
 
 
-def _package_version() -> str:
-    try:
-        return version("mgatk2")
-    except PackageNotFoundError:
-        return "unknown"
-
-
-def _git_commit() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).parents[2],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
 def run_paired_pipeline(config: PairedConfig) -> PairedResult:
-    """Run the single public paired-analysis orchestration seam."""
-    started = time.monotonic()
+    """Run the paired analysis and write the VCF, index, and callable BED."""
     chromosome, reference, checksum = load_fasta_reference(config.reference, config.mito_chr)
     config.mito_chr = chromosome
-    blacklist = load_blacklist_positions(
-        build="none", custom_bed=config.custom_blacklist, mito_chr=chromosome
+    blacklist = (
+        load_bed_positions(config.custom_blacklist, chromosome)
+        if config.custom_blacklist
+        else set()
     )
     tumor, tumor_stats = collect_sample_evidence(config.tumor, config, len(reference))
     normal, normal_stats = collect_sample_evidence(config.normal, config, len(reference))
-    evidence = build_position_evidence(chromosome, reference, tumor, normal, config, blacklist)
+    callable_ = callable_mask(reference, tumor, normal, config, blacklist)
     error_rates = estimate_error_rates(normal, reference, config.max_normal_af)
-    candidates = construct_candidates(evidence, tumor, normal, config, blacklist, error_rates)
-    callable_positions = sum(row["_joint_callable"] for row in evidence)
+    candidates = construct_candidates(
+        chromosome, reference, tumor, normal, config, blacklist, error_rates
+    )
+    callable_positions = int(callable_.sum())
     qc = {
-        "schema_version": config.schema_version,
-        "mgatk2_version": _package_version(),
-        "git_commit": _git_commit(),
+        "mgatk2_version": version("mgatk2"),
         "command_line": sys.argv,
         "parameters": asdict(config),
         "inputs": {
@@ -290,8 +205,6 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             "chromosome": chromosome,
             "length": len(reference),
             "sha256": checksum,
-            "standard_reference": True,
-            "shifted_reference_supplied": config.shifted_reference_supplied,
         },
         "deduplication": config.deduplication,
         "snv_only": True,
@@ -301,16 +214,9 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             if config.custom_blacklist
             else "MAPQ_only_no_chrM_blacklist"
         ),
-        "circular_edge": {
-            "bases": config.circular_edge_bases,
-            "status": (
-                "SHIFTED_REFERENCE_SUPPLIED"
-                if config.shifted_reference_supplied
-                else "CIRCULAR_EDGE_UNRESOLVED"
-            ),
-        },
+        "circular_edge_bases": config.circular_edge_bases,
         "counts": {
-            "evidence_positions": len(evidence),
+            "evidence_positions": len(reference),
             "callable_positions": callable_positions,
             "candidates": len(candidates),
             "pass_candidates": sum(row["filter"] == "PASS" for row in candidates),
@@ -322,25 +228,19 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             if config.autosomal_median_depth is not None
             else "MAPQ_only"
         ),
-        "elapsed_seconds": 0.0,
     }
-    qc["elapsed_seconds"] = time.monotonic() - started
     outputs = write_paired_outputs(
-        Path(config.output),
-        config.sample_name,
-        evidence,
-        candidates,
-        qc,
+        Path(config.output), config.sample_name, chromosome, callable_, candidates, qc
     )
     logger.info(
         "Paired analysis complete: %d positions, %d candidates, %d PASS",
-        len(evidence),
+        len(reference),
         len(candidates),
         qc["counts"]["pass_candidates"],
     )
     return PairedResult(
         outputs=outputs,
-        evidence_positions=len(evidence),
+        evidence_positions=len(reference),
         candidates=len(candidates),
         pass_candidates=qc["counts"]["pass_candidates"],
         callable_positions=callable_positions,

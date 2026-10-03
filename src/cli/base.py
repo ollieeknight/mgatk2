@@ -22,28 +22,6 @@ class OrderedGroup(click.Group):
         if ctx.parent is not None:
             super().format_usage(ctx, formatter)
 
-    def format_commands(self, ctx, formatter):
-        """Format commands in the order they were added, not alphabetically."""
-        commands = []
-        for subcommand in self.list_commands(ctx):
-            cmd = self.get_command(ctx, subcommand)
-            if cmd is None:
-                continue
-            if cmd.hidden:
-                continue
-            commands.append((subcommand, cmd))
-
-        if len(commands):
-            limit = formatter.width - 6 - max(len(cmd[0]) for cmd in commands)
-            rows = []
-            for subcommand, cmd in commands:
-                help = cmd.get_short_help_str(limit)
-                rows.append((subcommand, help))
-
-            if rows:
-                with formatter.section("Commands"):
-                    formatter.write_dl(rows)
-
 
 @click.group(cls=OrderedGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=version("mgatk2"))

@@ -6,7 +6,7 @@ import gzip
 import logging
 from pathlib import Path
 
-from data.blacklists import bundled_bed_path
+from data.blacklists import BLACKLIST_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def normalise_genome_name(genome: str) -> str:
 
 def get_blacklist_path(genome: str) -> Path:
     """Path to the bundled NUMT blacklist BED for a genome build."""
-    return bundled_bed_path(normalise_genome_name(genome))
+    return BLACKLIST_DIR / f"{normalise_genome_name(genome)}_numts.bed"
 
 
 def _open_text(path: Path):
@@ -90,12 +90,12 @@ def normalise_bed_chromosomes(
 def mask_fasta(
     input_fasta: Path,
     output_fasta: Path,
-    numt_regions: list[tuple[str, int, int]] | None = None,
+    numt_regions: list[tuple[str, int, int]],
     line_width: int = 60,
 ) -> dict:
     """Write ``input_fasta`` with every NUMT region replaced by ``N``."""
     by_chrom: dict[str, list[tuple[int, int]]] = {}
-    for chrom, start, end in numt_regions or []:
+    for chrom, start, end in numt_regions:
         by_chrom.setdefault(chrom, []).append((start, end))
 
     stats = {"chromosomes_processed": 0, "regions_masked": 0, "bases_masked": 0}
@@ -105,14 +105,14 @@ def mask_fasta(
         if chrom is None:
             return
         # BED is 0-based half-open, which is exactly Python slice semantics.
-        masked = list(sequence)
+        masked = bytearray(sequence, "ascii")
         for start, end in by_chrom.get(chrom, []):
             stop = min(end, len(masked))
             if stop > start:
-                masked[start:stop] = "N" * (stop - start)
+                masked[start:stop] = b"N" * (stop - start)
                 stats["regions_masked"] += 1
                 stats["bases_masked"] += stop - start
-        joined = "".join(masked)
+        joined = masked.decode("ascii")
         handle.write(f">{chrom}\n")
         for offset in range(0, len(joined), line_width):
             handle.write(joined[offset : offset + line_width] + "\n")

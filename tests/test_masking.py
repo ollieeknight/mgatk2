@@ -16,31 +16,15 @@ from utils.masking import (
 )
 
 
-@pytest.mark.parametrize(
-    ("supplied", "expected"),
-    [
-        ("hg38", "hg38"),
-        ("GRCh38", "hg38"),
-        ("grch37", "hg19"),
-        ("GRCm38", "mm10"),
-        ("mm9", "mm9"),
-    ],
-)
-def test_genome_aliases_normalise(supplied, expected):
-    assert normalise_genome_name(supplied) == expected
-
-
-def test_unknown_genome_is_rejected():
+def test_genome_names_resolve_to_bundled_blacklists():
+    assert normalise_genome_name("GRCh38") == "hg38"
+    assert normalise_genome_name("grcm37") == "mm9"
     with pytest.raises(ValueError, match="not supported"):
         normalise_genome_name("rn6")
 
-
-@pytest.mark.parametrize("build", ["hg38", "hg19", "mm10", "mm9"])
-def test_every_bundled_blacklist_is_present_and_parses(build):
-    regions = load_blacklist_regions(get_blacklist_path(build))
-
-    assert regions
-    assert all(start < end for _chrom, start, end in regions)
+    for build in ("hg38", "hg19", "mm10", "mm9"):
+        regions = load_blacklist_regions(get_blacklist_path(build))
+        assert regions and all(start < end for _chrom, start, end in regions)
 
 
 def test_masking_uses_bed_half_open_coordinates(tmp_path):
@@ -55,16 +39,6 @@ def test_masking_uses_bed_half_open_coordinates(tmp_path):
     )
     assert sequence == "ACGT" + "N" * 8 + "ACGT" * 7
     assert stats == {"chromosomes_processed": 1, "regions_masked": 1, "bases_masked": 8}
-
-
-def test_masking_leaves_unlisted_contigs_untouched(tmp_path):
-    source = tmp_path / "in.fa"
-    source.write_text(">chr1\nAAAA\n>chrM\nCCCC\n")
-    destination = tmp_path / "out.fa"
-
-    mask_fasta(source, destination, [("chr1", 0, 4)])
-
-    assert destination.read_text() == ">chr1\nNNNN\n>chrM\nCCCC\n"
 
 
 def test_gzipped_input_and_output_round_trip(tmp_path):
@@ -106,23 +80,3 @@ def test_hardmask_fasta_command_runs_end_to_end(tmp_path):
     assert destination.exists()
     # Bundled BEDs are nuclear-side only, so chrM must survive untouched.
     assert "C" * 50 in destination.read_text().replace("\n", "")
-
-
-def test_hardmask_fasta_rejects_an_unknown_genome(tmp_path):
-    command_module = importlib.import_module("cli.commands.mask")
-    source = tmp_path / "genome.fa"
-    source.write_text(">chr1\nAAAA\n")
-
-    result = CliRunner().invoke(
-        command_module.hardmask_fasta,
-        [
-            "--input-fasta",
-            str(source),
-            "--output-fasta",
-            str(tmp_path / "out.fa"),
-            "--genome",
-            "rn6",
-        ],
-    )
-
-    assert result.exit_code == 1

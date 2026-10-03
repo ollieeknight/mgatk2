@@ -15,74 +15,49 @@ CELL_FLAG_COLUMNS = ("is__cell_barcode", "is_cell_barcode", "is_cell")
 TRUE_VALUES = frozenset({"1", "1.0", "True", "true", "TRUE"})
 
 
-def load_singlecell_csv(
-    csv_file: str,
-) -> tuple[list[str] | None, dict[str, list] | None]:
-    """Load barcodes and metadata from cellranger-atac singlecell.csv file."""
-    if csv_file is None:
-        return None, None
-
-    try:
-        barcodes = []
-        metadata: dict[str, list] = {}
-
-        with open(csv_file) as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames
-
-            if headers is None:
-                raise InvalidInputError("CSV file has no headers")
-
-            cell_column = next(
-                (name for name in CELL_FLAG_COLUMNS if name in headers),
-                None,
+def load_singlecell_csv(csv_file: str) -> tuple[list[str], dict[str, list]]:
+    """Load cell barcodes and their metadata from a cellranger-atac singlecell.csv."""
+    with open(csv_file) as f:
+        reader = csv.DictReader(f)
+        headers = reader.fieldnames or []
+        cell_column = next((name for name in CELL_FLAG_COLUMNS if name in headers), None)
+        if cell_column is None:
+            raise InvalidInputError(
+                f"singlecell.csv missing a cell-flag column ({', '.join(CELL_FLAG_COLUMNS)})"
             )
-            if cell_column is None:
-                raise InvalidInputError(
-                    f"singlecell.csv missing a cell-flag column ({', '.join(CELL_FLAG_COLUMNS)})"
-                )
 
+        barcodes = []
+        metadata: dict[str, list] = {header: [] for header in headers}
+        for row in reader:
+            if row.get(cell_column, "0") not in TRUE_VALUES:
+                continue
+            barcodes.append(row["barcode"])
             for header in headers:
-                metadata[header] = []
+                value = row[header]
+                if header not in ("barcode", "excluded_reason"):
+                    value = _number(value)
+                metadata[header].append(value)
 
-            for row in reader:
-                if row.get(cell_column, "0") not in TRUE_VALUES:
-                    continue
-
-                barcode = row["barcode"]
-                barcodes.append(barcode)
-
-                for header in headers:
-                    value = row[header]
-                    if header not in ["barcode", "excluded_reason"]:
-                        try:
-                            value = int(value) if value else 0
-                        except ValueError:
-                            try:
-                                value = float(value) if value else 0.0
-                            except ValueError:
-                                pass  # Keep as string
-                    metadata[header].append(value)
-
-        if len(barcodes) == 0:
-            raise InvalidInputError(f"No cells found with {cell_column} set in {csv_file}")
-
-        return barcodes, metadata
-
-    except FileNotFoundError as e:
-        raise InvalidInputError(f"singlecell.csv file not found: {csv_file}") from e
-    except Exception as e:
-        logger.error("Error loading singlecell.csv: %s", e)
-        raise
+    if not barcodes:
+        raise InvalidInputError(f"No cells found with {cell_column} set in {csv_file}")
+    return barcodes, metadata
 
 
-def load_barcode_csv(
-    csv_file: str,
-) -> tuple[list[str] | None, dict[str, list] | None]:
+def _number(value: str):
+    """Parse a singlecell.csv field as int, then float; blank is 0, other text is kept."""
+    if not value:
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def load_barcode_csv(csv_file: str) -> tuple[list[str], dict[str, list] | None]:
     """Load barcodes from a .csv file, detecting ATAC vs 10x Multi schema."""
-    if csv_file is None:
-        return None, None
-
     with open(csv_file) as f:
         header = f.readline()
 
@@ -147,16 +122,8 @@ def ensure_alignment_index(alignment_path: str) -> None:
 
 
 def validate_barcode_file(barcode_file: str) -> None:
-    """Validate barcode file exists and is readable."""
-    if not barcode_file:
-        return
-
+    """Validate barcode file exists and is not empty."""
     if not os.path.exists(barcode_file):
         raise InvalidInputError(f'Barcode file not found: "{barcode_file}"')
-
-    try:
-        with open(barcode_file) as f:
-            if not f.readline().strip():
-                raise InvalidInputError(f"Barcode file is empty: {barcode_file}")
-    except Exception as e:
-        raise InvalidInputError(f"Cannot read barcode file: {e}") from e
+    if os.path.getsize(barcode_file) == 0:
+        raise InvalidInputError(f"Barcode file is empty: {barcode_file}")

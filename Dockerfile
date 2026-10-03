@@ -1,6 +1,6 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /opt/mgatk2
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install --no-cache-dir . && mgatk2 paired --help
+RUN pip install --no-cache-dir . && mgatk2 --help

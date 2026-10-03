@@ -6,23 +6,33 @@ Single-cell counting does not go through this module: see processing/pileup.py.
 import logging
 from pathlib import Path
 
-import numpy as np
 import pysam
 
 from core.config import PipelineConfig, SimpleRead
-from core.exceptions import (
-    BAMFormatError,
-    BAMReadError,
-    InvalidInputError,
-    NoBarcodeTagsError,
-    NoChrMReadsError,
-)
+from core.exceptions import InvalidInputError, ProcessingError
 from processing.fragments import (
     deduplicate_fragments,
     group_reads_into_fragments,
 )
 
 logger = logging.getLogger(__name__)
+
+# Spellings of the mitochondrial contig across references.
+MITO_ALIASES = ("chrM", "MT", "M", "chrMT")
+
+
+def resolve_mito_contig(available, requested: str, source) -> str:
+    """The requested contig, or another mitochondrial spelling when it is one itself."""
+    if requested in available:
+        return requested
+    if requested in MITO_ALIASES:
+        for name in MITO_ALIASES:
+            if name in available:
+                return name
+    raise InvalidInputError(
+        f"Contig {requested} is absent from {source}. Header contigs: "
+        f"{', '.join(list(available)[:10]) or 'none'}"
+    )
 
 
 class BAMReader:
@@ -32,17 +42,17 @@ class BAMReader:
         self,
         bam_path: str,
         config: PipelineConfig,
-        barcodes: set[str] | None = None,
+        check_barcode_tag: bool = False,
         reference_filename: str | None = None,
     ):
         self.bam_path = Path(bam_path)
         self.config = config
-        self.barcodes = barcodes or {"bulk"}
+        self.check_barcode_tag = check_barcode_tag
         self.reference_filename = reference_filename
         self._is_cram = self.bam_path.suffix.lower() == ".cram"
 
         if not self.bam_path.exists():
-            raise BAMReadError(str(bam_path), "File does not exist")
+            raise InvalidInputError(f"Alignment not found: {bam_path}")
 
         self._validate_bam_file()
 
@@ -59,31 +69,22 @@ class BAMReader:
         try:
             bam = self._open()
         except Exception as e:
-            raise BAMFormatError(str(self.bam_path), f"Cannot open: {e}") from e
+            raise InvalidInputError(f"Cannot open {self.bam_path}: {e}") from e
 
-        available = list(bam.references)
-        # Requested name wins; the aliases are only a fallback.
-        for mito_name in [self.config.mito_chr, "chrM", "MT", "M", "chrMT"]:
-            if mito_name in available:
-                if self.config.mito_chr != mito_name:
-                    logger.info(f"Using mitochondrial chromosome: {mito_name}")
-                    self.config.mito_chr = mito_name
-                break
-        else:
-            bam.close()
-            raise NoChrMReadsError(str(self.bam_path), available)
+        with bam:
+            mito_chr = resolve_mito_contig(bam.references, self.config.mito_chr, self.bam_path)
+            if mito_chr != self.config.mito_chr:
+                logger.info("Using mitochondrial chromosome: %s", mito_chr)
+            self.config.mito_chr = mito_chr
+            self.config.mito_length = bam.get_reference_length(mito_chr)
 
-        if self.barcodes != {"bulk"}:
-            reads_checked = 0
-            for i, read in enumerate(bam.fetch(self.config.mito_chr)):
-                reads_checked = i + 1
-                if read.has_tag(self.config.barcode_tag):
-                    break
-            else:
-                bam.close()
-                raise NoBarcodeTagsError(str(self.bam_path), self.config.barcode_tag, reads_checked)
-
-        bam.close()
+            if self.check_barcode_tag and not any(
+                read.has_tag(self.config.barcode_tag) for read in bam.fetch(mito_chr)
+            ):
+                raise InvalidInputError(
+                    f"No {mito_chr} read in {self.bam_path} carries barcode tag "
+                    f"'{self.config.barcode_tag}'; is this a single-cell BAM?"
+                )
 
     def collect_bulk_reads(self, deduplication: str) -> tuple[list, dict]:
         """Collect a paired-analysis sample and return fragments plus structured QC."""
@@ -127,7 +128,7 @@ class BAMReader:
                     if read.is_duplicate:
                         stats["preexisting_duplicate_reads"] += 1
                         continue
-                    if read.mapping_quality < self.config.quality.min_mapq:
+                    if read.mapping_quality < self.config.min_mapq:
                         stats["low_mapq_reads"] += 1
                         continue
                     if read.query_sequence is None:
@@ -145,11 +146,10 @@ class BAMReader:
                     reads.append(
                         SimpleRead(
                             reference_start=read.reference_start,
-                            reference_end=read.reference_end or read.reference_start,
                             is_reverse=read.is_reverse,
                             mapping_quality=read.mapping_quality,
                             query_sequence=read.query_sequence.encode("ascii"),
-                            query_qualities=np.array(read.query_qualities, dtype=np.int16),
+                            query_qualities=bytes(read.query_qualities),
                             cigar=cigar,
                             is_proper_pair=read.is_proper_pair,
                             is_paired=read.is_paired,
@@ -157,14 +157,12 @@ class BAMReader:
                             query_name=read.query_name,
                             is_read1=read.is_read1,
                             is_read2=read.is_read2,
-                            is_qcfail=read.is_qcfail,
-                            is_duplicate=read.is_duplicate,
                         )
                     )
         except InvalidInputError:
             raise
         except Exception as e:
-            raise BAMReadError(str(self.bam_path), f"Read error: {e}") from e
+            raise ProcessingError(f"Cannot read {self.bam_path}: {e}") from e
 
         fragments, collisions = group_reads_into_fragments(reads)
         fragments, duplicate_stats = deduplicate_fragments(fragments, deduplication)
@@ -174,5 +172,5 @@ class BAMReader:
         stats["retained_fragments"] = len(fragments)
         stats["reference_length"] = reference_length
         if not fragments:
-            raise NoChrMReadsError(str(self.bam_path), [self.config.mito_chr])
+            raise InvalidInputError(f"No usable {self.config.mito_chr} reads in {self.bam_path}")
         return fragments, stats

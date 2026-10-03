@@ -1,9 +1,13 @@
 .git
 .github
-.test-work
 .venv
+.ruff_cache
+.pytest_cache
+.test-work
 **/__pycache__
 *.egg-info
 build
 dist
+R
+docs
 tests

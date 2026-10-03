@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgatk2"
-version = "1.4.0"
-description = "Mitochondrial genome analysis toolkit for single-cell data"
+version = "1.4.1"
+description = "Mitochondrial genotyping for single-cell and paired bulk sequencing data"
 readme = "README.md"
 authors = [{name = "Oliver Knight", email = "oliver.knight@charite.de"}]
 license = "MIT"
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1", "pytest>=7", "ruff>=0.5", "setuptools>=77", "wheel"]
+dev = ["build>=1", "pytest>=7", "ruff>=0.5", "vulture>=2"]
 
 [project.urls]
 Repository = "https://github.com/ollieeknight/mgatk2"
@@ -50,10 +50,10 @@ ignore = ["E501"]
 "__init__.py" = ["F401", "F403", "F405"]
 
 [tool.vulture]
-# Click resolves format_commands through the Group class; pysam sets qual,
-# reference_id, and the mate fields as C attributes. Vulture sees neither.
+# Click calls list_commands on the Group; pysam sets qual, reference_id, and the
+# mate fields as C attributes. Vulture sees neither.
 ignore_names = [
-    "format_commands",
+    "list_commands",
     "qual",
     "reference_id",
     "next_reference_id",

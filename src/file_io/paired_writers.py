@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 import os
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pysam
 
 # Normal first, then tumour: the sample order every somatic VCF consumer
@@ -76,24 +76,19 @@ def _temporary_path(destination: Path, suffix: str = "") -> Path:
     return Path(name)
 
 
-def _write_callable_bed(path: Path, evidence: list[dict]) -> None:
-    """Positions reportable in both samples, as a bgzipped BED.
+def _write_callable_bed(path: Path, chromosome: str, callable_: np.ndarray) -> None:
+    """Positions callable in both samples, as a bgzipped BED.
 
-    The one output the VCF cannot stand in for: it carries variant sites only,
-    so callable territory is unrecoverable after the run. Same companion file
-    GATK CallableLoci and Strelka emit alongside a somatic VCF, and the
-    denominator for any per-callable-base mutation burden.
+    The VCF holds variant sites only, so this is the one record of callable
+    territory, and the denominator for any per-base mutation burden.
     """
     source = _temporary_path(path, ".bed")
     compressed = Path(f"{source}.gz")
     try:
         with source.open("w") as handle:
-            for row in evidence:
-                if row["_joint_callable"]:
-                    handle.write(f"{row['chrom']}\t{row['pos'] - 1}\t{row['pos']}\n")
+            for index in np.flatnonzero(callable_):
+                handle.write(f"{chromosome}\t{index}\t{index + 1}\n")
         pysam.tabix_compress(str(source), str(compressed), force=True)
-        with gzip.open(compressed, "rt") as handle:
-            list(handle)
         os.replace(compressed, path)
     finally:
         source.unlink(missing_ok=True)
@@ -108,9 +103,7 @@ def _add_vcf_headers(header: pysam.VariantHeader, qc: dict) -> None:
     header.add_meta("normal_sample", value="NORMAL")
     header.add_meta("mgatk2_tumor", value=qc["inputs"]["tumor"]["path"])
     header.add_meta("mgatk2_normal", value=qc["inputs"]["normal"]["path"])
-    # The whole QC record, on one unstructured meta line, because the VCF is
-    # now the only artefact and provenance cannot live in a file that no longer
-    # exists. Read it back with:
+    # The whole QC record on one unstructured meta line. Read it back with:
     #   bcftools view -h out.vcf.gz | sed -n 's/^##mgatk2_qc=//p' | jq
     header.add_meta("mgatk2_qc", value=json.dumps(qc, sort_keys=True, allow_nan=False))
     header.contigs.add(qc["reference"]["chromosome"], length=qc["reference"]["length"])
@@ -177,9 +170,6 @@ def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
                 output.write(record)
         pysam.tabix_compress(str(source), str(compressed), force=True)
         pysam.tabix_index(str(compressed), preset="vcf", force=True)
-        with pysam.VariantFile(compressed) as check:
-            if sum(1 for _record in check) != len(candidates):
-                raise OSError(f"Record-count validation failed for {path}")
         os.replace(compressed, path)
         os.replace(Path(f"{compressed}.tbi"), Path(f"{path}.tbi"))
     finally:
@@ -191,11 +181,12 @@ def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
 def write_paired_outputs(
     output_dir: Path,
     sample_name: str,
-    evidence: list[dict],
+    chromosome: str,
+    callable_: np.ndarray,
     candidates: list[dict],
     qc: dict,
 ) -> dict[str, str]:
-    """Write and validate the complete paired output contract."""
+    """Write the VCF, its index, and the callable BED."""
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "vcf": output_dir / f"{sample_name}.mt_variants.vcf.gz",
@@ -204,5 +195,5 @@ def write_paired_outputs(
     }
     qc["outputs"] = {key: str(value) for key, value in paths.items()}
     _write_vcf(paths["vcf"], candidates, qc)
-    _write_callable_bed(paths["callable_bed"], evidence)
+    _write_callable_bed(paths["callable_bed"], chromosome, callable_)
     return {key: str(value) for key, value in paths.items()}

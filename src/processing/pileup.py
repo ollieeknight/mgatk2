@@ -25,14 +25,10 @@ for _char, _idx in (("A", 0), ("C", 1), ("G", 2), ("T", 3)):
 # Reused so the hot loop never allocates a position vector.
 _POSITIONS = np.arange(1 << 16, dtype=np.int32)
 
-# ponytail: a UMI's identity alone isn't a safe dedup key on a 16.6kb contig --
-# two independent molecules can share a 12bp UMI by chance (~75 collisions per
-# 50k reads/cell). Bound the collapse to reads within this many bases of the
-# last-kept read sharing that UMI + strand, chaining forward through a BAM
-# sorted by coordinate. 500bp comfortably covers 10x 3' fragment sizes while
-# staying far short of typical inter-locus separation. Upgrade path: a real
-# fragment-size estimate per library, or gene-aware boundaries, if this proves
-# too coarse.
+# A 12bp UMI can recur by chance across a 16.6kb contig, so UMI deduplication
+# only collapses reads within this many bases of the last kept read carrying
+# the same UMI and strand. 500bp covers 10x 3' fragment sizes.
+UMI_TAG = "UB"
 UMI_DEDUP_WINDOW = 500
 
 CIGAR_MATCH = (0, 7, 8)
@@ -63,8 +59,8 @@ class ShardResult:
 
 def plan_shards(n_cells: int, config: PipelineConfig) -> int:
     """Cells per shard, sized so all concurrent shards fit the memory budget."""
-    n_cores = max(1, config.performance.n_cores)
-    budget = config.performance.max_memory_gb * 1e9 * 0.6
+    n_cores = max(1, config.n_cores)
+    budget = config.max_memory_gb * 1e9 * 0.6
     affordable = max(1, int(budget / (n_cores * config.bytes_per_cell())))
     even_split = max(1, -(-n_cells // n_cores))
     return min(even_split, affordable)
@@ -72,16 +68,14 @@ def plan_shards(n_cells: int, config: PipelineConfig) -> int:
 
 def scan_shard(task: tuple) -> ShardResult:
     """Stream chrM once and count bases for this shard's barcodes."""
-    bam_path, config, barcodes, offset, reference_filename = task
-    return _Shard(bam_path, config, barcodes, offset, reference_filename).run()
+    return _Shard(*task).run()
 
 
 class _Shard:
-    def __init__(self, bam_path, config: PipelineConfig, barcodes, offset, reference_filename):
+    def __init__(self, bam_path, config: PipelineConfig, barcodes, offset):
         self.bam_path = str(bam_path)
         self.config = config
         self.offset = offset
-        self.reference_filename = reference_filename
         self.index_of = {bc: i for i, bc in enumerate(barcodes)}
         self.n_cells = len(barcodes)
         self.is_bulk = list(barcodes) == ["bulk"]
@@ -97,14 +91,6 @@ class _Shard:
         self.n_reads = np.zeros(self.n_cells, dtype=np.int64)
         self.n_paired = np.zeros(self.n_cells, dtype=np.int64)
 
-    def _open(self):
-        if self.bam_path.lower().endswith(".cram"):
-            return pysam.AlignmentFile(
-                self.bam_path, "rc", reference_filename=self.reference_filename
-            )
-        # BGZF decompression threads: the shard's wall time is decode-bound.
-        return pysam.AlignmentFile(self.bam_path, "rb", threads=2)
-
     def run(self) -> ShardResult:
         total_reads, duplicates = self._accumulate()
         self._apply_strand_bias()
@@ -112,18 +98,16 @@ class _Shard:
 
     def _accumulate(self) -> tuple[int, int]:
         config = self.config
-        quality = config.quality
         length = config.mito_length
         tag = config.barcode_tag
-        nh_max = quality.nh_max
-        nm_max = quality.nm_max
-        min_mapq = quality.min_mapq
-        min_baseq = quality.min_baseq
-        min_dist = quality.min_distance_from_end
-        dedup = not config.dedup.skip
-        use_fragment_length = config.dedup.use_fragment_length
-        use_umi = config.dedup.use_umi
-        umi_tag = config.dedup.umi_tag
+        nh_max = config.nh_max
+        nm_max = config.nm_max
+        min_mapq = config.min_mapq
+        min_baseq = config.min_baseq
+        min_dist = config.min_distance_from_end
+        dedup = not config.skip_deduplication
+        use_fragment_length = config.use_fragment_length_dedup
+        use_umi = config.use_umi_dedup
         index_of = self.index_of
         is_bulk = self.is_bulk
         counts = self.counts
@@ -137,7 +121,8 @@ class _Shard:
         duplicates = 0
         default_quals = np.full(1024, 60, dtype=np.uint8)
 
-        with self._open() as bam:
+        # BGZF decompression threads: the shard's wall time is decode-bound.
+        with pysam.AlignmentFile(self.bam_path, "rb", threads=2) as bam:
             for read in bam.fetch(config.mito_chr):
                 total_reads += 1
 
@@ -163,52 +148,40 @@ class _Shard:
                     if nm is not None and nm > nm_max:
                         continue
 
-                if dedup:
-                    if use_umi:
-                        umi = read.get_tag(umi_tag) if read.has_tag(umi_tag) else None
-                        if umi is None:
-                            # A missing tag falls back to position so the read
-                            # is still counted (not silently dropped).
-                            key = (read.reference_start << 1) | int(read.is_reverse)
-                            cell_seen = seen[cell]
-                            if key in cell_seen:
-                                duplicates += 1
-                                continue
-                            cell_seen.add(key)
-                        else:
-                            # A shared UMI alone isn't a safe key on a 16.6kb
-                            # contig -- bound the collapse to nearby reads.
-                            # bam.fetch is coordinate-sorted, so reference_start
-                            # is non-decreasing within this chain.
-                            chain_key = (umi, int(read.is_reverse))
-                            chain = umi_last[cell]
-                            last_start = chain.get(chain_key)
-                            if (
-                                last_start is not None
-                                and read.reference_start - last_start <= UMI_DEDUP_WINDOW
-                            ):
-                                duplicates += 1
-                                continue
-                            chain[chain_key] = read.reference_start
-                    else:
-                        key = (read.reference_start << 1) | int(read.is_reverse)
-                        if use_fragment_length:
-                            key |= abs(read.template_length or 0) << 20
-                        cell_seen = seen[cell]
-                        if key in cell_seen:
-                            duplicates += 1
-                            continue
-                        cell_seen.add(key)
-
                 if read.mapping_quality < min_mapq:
                     continue
-
                 sequence = read.query_sequence
                 # No CIGAR means no aligned span: reference_end is None and the
                 # read contributes neither bases nor a Tn5 cut site.
                 cigar = read.cigartuples
                 if not sequence or not cigar:
                     continue
+
+                # Deduplicate only reads that passed every filter, as mgatk
+                # does, so a failing read can never claim a duplicate's key.
+                if dedup:
+                    umi = read.get_tag(UMI_TAG) if use_umi and read.has_tag(UMI_TAG) else None
+                    if umi is not None:
+                        # Chained forward through the coordinate-sorted stream.
+                        chain_key = (umi, read.is_reverse)
+                        last_start = umi_last[cell].get(chain_key)
+                        if (
+                            last_start is not None
+                            and read.reference_start - last_start <= UMI_DEDUP_WINDOW
+                        ):
+                            duplicates += 1
+                            continue
+                        umi_last[cell][chain_key] = read.reference_start
+                    else:
+                        # Reads without a UMI fall back to start and strand.
+                        key = (read.reference_start << 1) | int(read.is_reverse)
+                        if use_fragment_length:
+                            key |= abs(read.template_length or 0) << 32
+                        cell_seen = seen[cell]
+                        if key in cell_seen:
+                            duplicates += 1
+                            continue
+                        cell_seen.add(key)
 
                 # Counted only once the read is certain to contribute bases, so
                 # this stays equal to the Tn5 cut total.
@@ -299,7 +272,7 @@ class _Shard:
 
     def _apply_strand_bias(self):
         """Zero any base whose observations come too heavily from one strand."""
-        max_bias = self.config.quality.max_strand_bias
+        max_bias = self.config.max_strand_bias
         if max_bias >= 1.0:
             return  # a ratio can never exceed 1.0, so the filter is a no-op
 
