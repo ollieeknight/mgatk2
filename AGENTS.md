@@ -80,7 +80,7 @@ in `processing/` or `file_io/writers.py`.
 - HDF5 matrices stored positions × cells; `hdf5r` read transposed cells ×
   positions shape in R.
 - Single-cell reference allele inferred from aggregate counts.
-- QC report choice go through `MtDNAPipeline.wants_tn5_report`. `--assay` decide
+- QC report choice go through `core.pipeline.wants_tn5_report`. `--assay` decide
   directly; without it, fall back to historic inference (barcode metadata come
   only from a 10x scATAC `singlecell.csv`).
 
@@ -98,7 +98,7 @@ in `processing/` or `file_io/writers.py`.
   Not an output.
 - Quality stats stored as per-allele histograms (`analysis/quality_stats.py`),
   never running sums. Pooled ref+alt mean cannot separate real allele from
-  artefact — that was the schema 1.0 mistake.
+  artefact — that was the pre-v1.3 mistake.
 - Candidate pass = two independent tests. `EP`/`EQ` = tumour enriched over
   normal. `SEQP` vs `ERR` = tumour alt above learned substitution error rate.
   Fisher alone assume shared error rate, so depth asymmetry alone look
@@ -134,9 +134,9 @@ in `processing/` or `file_io/writers.py`.
   may filter mitochondrial positions. `--autosomal-median-depth` enable
   `POSSIBLE_NUMT`.
 
-Paired schema version live in `PairedConfig.schema_version` (single field —
-evidence/candidate/qc versions collapsed when the tables stopped being outputs).
-Any field or semantic change need schema-version decision + tests.
+Paired output version = release version (`##source`, `mgatk2_version` in
+`##mgatk2_qc`). No separate schema number. Any field or semantic change need
+README migration note + tests.
 
 Scope: mitochondrial heteroplasmy evidence generator, not general somatic
 WES/WGS caller. Deliberately no local realignment, no assembly, no indels, no
@@ -176,7 +176,7 @@ revisited, must be site-specific beta-binomial background model
   installs its own root-logger file handler via `setup_file_logging`.
 - `qc/run_config.json` and `qc/summary.txt` carry the same run metadata: JSON
   for machines, text for people. The HTML report reads the JSON, so nothing
-  parses the summary's prose. `paired` still writes no sidecar JSON; its
+  parses the summary's prose. `paired` writes no sidecar JSON; its
   provenance lives in the VCF header.
 - The HTML report reads each HDF5 file once and sums positions x cells in
   column blocks, then passes arrays to the plot functions. No plot may open a

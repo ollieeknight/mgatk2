@@ -3,7 +3,7 @@
 Storing a histogram per (position, allele) rather than a running sum is what
 makes median and rank-sum statistics possible at all: a mean pooled over
 reference and alternate observations, which is what mgatk2 reported before
-schema 2.0, cannot separate a real allele from an artefact.
+v1.3, cannot separate a real allele from an artefact.
 """
 
 from __future__ import annotations
@@ -30,8 +30,6 @@ class QualityHistograms:
         self.baseq = np.zeros((length, 4, BASEQ_BINS), dtype=np.int32)
         self.mapq = np.zeros((length, 4, MAPQ_BINS), dtype=np.int32)
         self.distance = np.zeros((length, 4, DISTANCE_BINS), dtype=np.int32)
-        self.clipped = np.zeros(length, dtype=np.int64)
-        self.overlap_disagreements = np.zeros(length, dtype=np.int64)
         self._buffer: list[list[int]] = [[] for _ in range(7)]
         self._buffered = 0
 

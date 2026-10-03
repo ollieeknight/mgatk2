@@ -25,7 +25,6 @@ class Observation:
     mapping_quality: int
     distance_from_end: int  # bases to the nearest read end; artefacts cluster low
     is_reverse: bool
-    clipped: bool
     orientation: str | None
 
 
@@ -112,7 +111,6 @@ def read_observations(
 ) -> dict[int, Observation]:
     """Extract SNV observations; indels are deliberately not represented."""
     observations = {}
-    clipped = any(op in {4, 5} for op, _length in read.cigar)
     read_length = len(read.query_sequence)
     for query_pos, ref_pos in read.get_aligned_pairs():
         if query_pos < min_distance_from_end or query_pos >= read_length - min_distance_from_end:
@@ -129,7 +127,6 @@ def read_observations(
             mapping_quality=read.mapping_quality,
             distance_from_end=min(query_pos, read_length - 1 - query_pos),
             is_reverse=read.is_reverse,
-            clipped=clipped,
             orientation=orientation,
         )
     return observations
@@ -137,7 +134,7 @@ def read_observations(
 
 def resolve_fragment_observations(
     fragment: Fragment, min_baseq: int, min_distance_from_end: int
-) -> tuple[dict[int, Observation], dict[str, object]]:
+) -> tuple[dict[int, Observation], dict[str, int]]:
     """Collapse mate overlaps to at most one observation per reference position."""
     orientation = fragment_orientation(fragment)
     by_position: dict[int, list[Observation]] = defaultdict(list)
@@ -148,12 +145,7 @@ def resolve_fragment_observations(
             by_position[position].append(observation)
 
     resolved = {}
-    stats: dict[str, object] = {
-        "overlap_positions": 0,
-        "overlap_agreements": 0,
-        "overlap_disagreements": 0,
-        "disagreement_positions": set(),
-    }
+    stats = {"overlap_positions": 0, "overlap_agreements": 0, "overlap_disagreements": 0}
     for position, observations in by_position.items():
         if len(observations) == 1:
             resolved[position] = observations[0]
@@ -171,7 +163,6 @@ def resolve_fragment_observations(
             )[0]
         elif len({observation.base for observation in best}) == 1:
             stats["overlap_disagreements"] += 1
-            stats["disagreement_positions"].add(position)
             resolved[position] = sorted(
                 best,
                 key=lambda observation: (
@@ -182,5 +173,4 @@ def resolve_fragment_observations(
             )[0]
         else:
             stats["overlap_disagreements"] += 1
-            stats["disagreement_positions"].add(position)
     return resolved, stats

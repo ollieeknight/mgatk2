@@ -6,34 +6,6 @@ from pathlib import Path
 import numpy
 
 
-@dataclass
-class QualityThresholds:
-    """Quality filtering parameters"""
-
-    min_baseq: int = 20
-    min_mapq: int = 30
-    max_strand_bias: float = 1.0
-    min_distance_from_end: int = 5
-    nh_max: int = 0  # 0 = disabled; 1 matches mgatk tenx default
-    nm_max: int = 0  # 0 = disabled; 4 matches mgatk tenx default
-
-
-@dataclass
-class DeduplicationConfig:
-    """Deduplication parameters."""
-
-    skip: bool = False
-    use_fragment_length: bool = True
-
-
-@dataclass
-class PerformanceConfig:
-    """Resource management."""
-
-    n_cores: int = 8  # CPU cores; also the default number of barcode shards
-    max_memory_gb: float = 128.0
-
-
 @dataclass(slots=True)
 class SimpleRead:
     """Lightweight BAM read. Used by the paired/bulk fragment path only."""
@@ -105,7 +77,6 @@ class PairedConfig:
     input_is_consensus: bool = False
     shifted_reference_supplied: bool = False
     circular_edge_bases: int = 500
-    schema_version: str = "3.0"
 
     def __post_init__(self) -> None:
         for name in (
@@ -138,49 +109,29 @@ class PairedConfig:
             raise ValueError("autosomal_median_depth must be non-negative")
 
 
+@dataclass
 class PipelineConfig:
-    """Pipeline configuration."""
+    """Single-cell counting configuration."""
 
-    def __init__(
-        self,
-        min_baseq: int = 20,
-        min_mapq: int = 30,
-        max_strand_bias: float = 1.0,
-        min_distance_from_end: int = 5,
-        skip_deduplication: bool = False,
-        use_fragment_length_dedup: bool = True,
-        n_cores: int = 8,
-        max_memory_gb: float = 128.0,
-        min_reads_per_cell: int = 1,
-        barcode_tag: str = "CB",
-        mito_chr: str = "chrM",
-        mito_length: int = 16569,
-        nh_max: int = 0,
-        nm_max: int = 0,
-        compute_tn5: bool = True,
-        panel_positions: frozenset[int] | None = None,
-    ):
-        self.quality = QualityThresholds(
-            min_baseq=min_baseq,
-            min_mapq=min_mapq,
-            max_strand_bias=max_strand_bias,
-            min_distance_from_end=min_distance_from_end,
-            nh_max=nh_max,
-            nm_max=nm_max,
-        )
-        self.dedup = DeduplicationConfig(
-            skip=skip_deduplication, use_fragment_length=use_fragment_length_dedup
-        )
-        self.performance = PerformanceConfig(n_cores=n_cores, max_memory_gb=max_memory_gb)
-        self.min_reads_per_cell = min_reads_per_cell
-        self.barcode_tag = barcode_tag
-        self.mito_chr = mito_chr
-        self.mito_length = mito_length
-        self.compute_tn5 = compute_tn5
-        # 1-based targeted positions for an amplicon panel. Coverage breadth is
-        # reported against these, because a base a panel never targets has not
-        # failed to be covered.
-        self.panel_positions = panel_positions
+    min_baseq: int = 20
+    min_mapq: int = 30
+    max_strand_bias: float = 1.0
+    min_distance_from_end: int = 5
+    nh_max: int = 0  # 0 = disabled; 1 matches mgatk tenx default
+    nm_max: int = 0  # 0 = disabled; 4 matches mgatk tenx default
+    skip_deduplication: bool = False
+    use_fragment_length_dedup: bool = True
+    n_cores: int = 8  # also the default number of barcode shards
+    max_memory_gb: float = 128.0
+    min_reads_per_cell: int = 1
+    barcode_tag: str = "CB"
+    mito_chr: str = "chrM"
+    mito_length: int = 16569
+    compute_tn5: bool = True
+    # 1-based targeted positions for an amplicon panel. Coverage breadth is
+    # reported against these, because a base a panel never targets has not
+    # failed to be covered.
+    panel_positions: frozenset[int] | None = None
 
     # uint32 base counts (4 bases x 2 strands) plus uint32 Tn5 cuts (2 strands).
     def bytes_per_cell(self) -> int:

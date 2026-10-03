@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 import os
 import tempfile
@@ -92,8 +91,6 @@ def _write_callable_bed(path: Path, evidence: list[dict]) -> None:
                 if row["_joint_callable"]:
                     handle.write(f"{row['chrom']}\t{row['pos'] - 1}\t{row['pos']}\n")
         pysam.tabix_compress(str(source), str(compressed), force=True)
-        with gzip.open(compressed, "rt") as handle:
-            list(handle)
         os.replace(compressed, path)
     finally:
         source.unlink(missing_ok=True)
@@ -177,9 +174,6 @@ def _write_vcf(path: Path, candidates: list[dict], qc: dict) -> None:
                 output.write(record)
         pysam.tabix_compress(str(source), str(compressed), force=True)
         pysam.tabix_index(str(compressed), preset="vcf", force=True)
-        with pysam.VariantFile(compressed) as check:
-            if sum(1 for _record in check) != len(candidates):
-                raise OSError(f"Record-count validation failed for {path}")
         os.replace(compressed, path)
         os.replace(Path(f"{compressed}.tbi"), Path(f"{path}.tbi"))
     finally:
@@ -195,7 +189,7 @@ def write_paired_outputs(
     candidates: list[dict],
     qc: dict,
 ) -> dict[str, str]:
-    """Write and validate the complete paired output contract."""
+    """Write the VCF, its index, and the callable BED."""
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "vcf": output_dir / f"{sample_name}.mt_variants.vcf.gz",

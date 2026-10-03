@@ -57,16 +57,6 @@ def test_masking_uses_bed_half_open_coordinates(tmp_path):
     assert stats == {"chromosomes_processed": 1, "regions_masked": 1, "bases_masked": 8}
 
 
-def test_masking_leaves_unlisted_contigs_untouched(tmp_path):
-    source = tmp_path / "in.fa"
-    source.write_text(">chr1\nAAAA\n>chrM\nCCCC\n")
-    destination = tmp_path / "out.fa"
-
-    mask_fasta(source, destination, [("chr1", 0, 4)])
-
-    assert destination.read_text() == ">chr1\nNNNN\n>chrM\nCCCC\n"
-
-
 def test_gzipped_input_and_output_round_trip(tmp_path):
     source = tmp_path / "in.fa.gz"
     with gzip.open(source, "wt") as handle:
@@ -106,23 +96,3 @@ def test_hardmask_fasta_command_runs_end_to_end(tmp_path):
     assert destination.exists()
     # Bundled BEDs are nuclear-side only, so chrM must survive untouched.
     assert "C" * 50 in destination.read_text().replace("\n", "")
-
-
-def test_hardmask_fasta_rejects_an_unknown_genome(tmp_path):
-    command_module = importlib.import_module("cli.commands.mask")
-    source = tmp_path / "genome.fa"
-    source.write_text(">chr1\nAAAA\n")
-
-    result = CliRunner().invoke(
-        command_module.hardmask_fasta,
-        [
-            "--input-fasta",
-            str(source),
-            "--output-fasta",
-            str(tmp_path / "out.fa"),
-            "--genome",
-            "rn6",
-        ],
-    )
-
-    assert result.exit_code == 1

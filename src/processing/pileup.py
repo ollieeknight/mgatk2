@@ -53,8 +53,8 @@ class ShardResult:
 
 def plan_shards(n_cells: int, config: PipelineConfig) -> int:
     """Cells per shard, sized so all concurrent shards fit the memory budget."""
-    n_cores = max(1, config.performance.n_cores)
-    budget = config.performance.max_memory_gb * 1e9 * 0.6
+    n_cores = max(1, config.n_cores)
+    budget = config.max_memory_gb * 1e9 * 0.6
     affordable = max(1, int(budget / (n_cores * config.bytes_per_cell())))
     even_split = max(1, -(-n_cells // n_cores))
     return min(even_split, affordable)
@@ -102,16 +102,15 @@ class _Shard:
 
     def _accumulate(self) -> tuple[int, int]:
         config = self.config
-        quality = config.quality
         length = config.mito_length
         tag = config.barcode_tag
-        nh_max = quality.nh_max
-        nm_max = quality.nm_max
-        min_mapq = quality.min_mapq
-        min_baseq = quality.min_baseq
-        min_dist = quality.min_distance_from_end
-        dedup = not config.dedup.skip
-        use_fragment_length = config.dedup.use_fragment_length
+        nh_max = config.nh_max
+        nm_max = config.nm_max
+        min_mapq = config.min_mapq
+        min_baseq = config.min_baseq
+        min_dist = config.min_distance_from_end
+        dedup = not config.skip_deduplication
+        use_fragment_length = config.use_fragment_length_dedup
         index_of = self.index_of
         is_bulk = self.is_bulk
         counts = self.counts
@@ -259,7 +258,7 @@ class _Shard:
 
     def _apply_strand_bias(self):
         """Zero any base whose observations come too heavily from one strand."""
-        max_bias = self.config.quality.max_strand_bias
+        max_bias = self.config.max_strand_bias
         if max_bias >= 1.0:
             return  # a ratio can never exceed 1.0, so the filter is a no-op
 

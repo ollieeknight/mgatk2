@@ -6,7 +6,7 @@ import gzip
 import logging
 from pathlib import Path
 
-from data.blacklists import bundled_bed_path
+from data.blacklists import BLACKLIST_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def normalise_genome_name(genome: str) -> str:
 
 def get_blacklist_path(genome: str) -> Path:
     """Path to the bundled NUMT blacklist BED for a genome build."""
-    return bundled_bed_path(normalise_genome_name(genome))
+    return BLACKLIST_DIR / f"{normalise_genome_name(genome)}_numts.bed"
 
 
 def _open_text(path: Path):

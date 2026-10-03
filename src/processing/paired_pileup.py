@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import subprocess
 import sys
-import time
 from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -18,7 +16,7 @@ from analysis.paired_calling import MIN_ERROR_RATE, construct_candidates
 from analysis.quality_stats import BASE_INDEX, QualityHistograms
 from core.config import PairedConfig, PipelineConfig
 from core.exceptions import InvalidInputError
-from data.blacklists import load_blacklist_positions
+from data.blacklists import load_bed_positions
 from file_io.paired_writers import write_paired_outputs
 from processing.fragments import resolve_fragment_observations
 from processing.readers import BAMReader
@@ -104,10 +102,7 @@ def collect_sample_evidence(
             fragment, config.min_baseq, config.min_distance_from_end
         )
         for key in overlap_totals:
-            overlap_totals[key] += int(overlap[key])
-        for position in overlap["disagreement_positions"]:
-            if 0 <= position < reference_length:
-                histograms.overlap_disagreements[position] += 1
+            overlap_totals[key] += overlap[key]
         for position, observation in observations.items():
             if not 0 <= position < reference_length:
                 continue
@@ -120,8 +115,6 @@ def collect_sample_evidence(
                 observation.distance_from_end,
                 orientation_index.get(observation.orientation, -1),
             )
-            if observation.clipped:
-                histograms.clipped[position] += 1
     histograms.flush()
     stats.update(overlap_totals)
     stats["counted_observations"] = int(histograms.depth().sum())
@@ -195,10 +188,6 @@ def build_position_evidence(
             "ref": ref,
             "normal_dp": normal_depth,
             "tumor_dp": tumor_depth,
-            "normal_clipped": int(normal.clipped[index]),
-            "tumor_clipped": int(tumor.clipped[index]),
-            "normal_overlap_disagreements": int(normal.overlap_disagreements[index]),
-            "tumor_overlap_disagreements": int(tumor.overlap_disagreements[index]),
             # Per-sample callability is reproducible from the depth columns and
             # the recorded thresholds, so only the joint verdict is kept, and
             # only to drive the callable BED.
@@ -235,27 +224,14 @@ def _package_version() -> str:
         return "unknown"
 
 
-def _git_commit() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).parents[2],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
 def run_paired_pipeline(config: PairedConfig) -> PairedResult:
     """Run the single public paired-analysis orchestration seam."""
-    started = time.monotonic()
     chromosome, reference, checksum = load_fasta_reference(config.reference, config.mito_chr)
     config.mito_chr = chromosome
-    blacklist = load_blacklist_positions(
-        build="none", custom_bed=config.custom_blacklist, mito_chr=chromosome
+    blacklist = (
+        load_bed_positions(config.custom_blacklist, chromosome)
+        if config.custom_blacklist
+        else set()
     )
     tumor, tumor_stats = collect_sample_evidence(config.tumor, config, len(reference))
     normal, normal_stats = collect_sample_evidence(config.normal, config, len(reference))
@@ -264,9 +240,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
     candidates = construct_candidates(evidence, tumor, normal, config, blacklist, error_rates)
     callable_positions = sum(row["_joint_callable"] for row in evidence)
     qc = {
-        "schema_version": config.schema_version,
         "mgatk2_version": _package_version(),
-        "git_commit": _git_commit(),
         "command_line": sys.argv,
         "parameters": asdict(config),
         "inputs": {
@@ -322,9 +296,7 @@ def run_paired_pipeline(config: PairedConfig) -> PairedResult:
             if config.autosomal_median_depth is not None
             else "MAPQ_only"
         ),
-        "elapsed_seconds": 0.0,
     }
-    qc["elapsed_seconds"] = time.monotonic() - started
     outputs = write_paired_outputs(
         Path(config.output),
         config.sample_name,

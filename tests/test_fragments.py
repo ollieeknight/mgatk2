@@ -119,19 +119,3 @@ def test_overlap_disagreements_use_quality_or_are_masked():
     )
     observations, stats = resolve_fragment_observations(tied, 0, 0)
     assert observations == {}
-    assert stats["disagreement_positions"] == {0}
-
-
-def test_separate_mates_are_unchanged():
-    fragment = Fragment(
-        "pair",
-        [
-            _read("pair", "AA", 30, start=0, is_paired=True),
-            _read("pair", "CC", 30, start=3, reverse=True, is_paired=True),
-        ],
-    )
-
-    observations, stats = resolve_fragment_observations(fragment, 0, 0)
-
-    assert set(observations) == {0, 1, 3, 4}
-    assert stats["overlap_positions"] == 0

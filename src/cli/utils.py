@@ -1,23 +1,19 @@
-"""Utility functions for CLI operations."""
+"""Shared plumbing for the single-cell commands."""
 
-import csv
 import logging
 import os
 import sys
-from datetime import datetime
+from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 
 import pysam
 
-from core.exceptions import InvalidInputError, ProcessingError
-from utils.utils import (
-    CELL_FLAG_COLUMNS,
-    TRUE_VALUES,
-    has_alignment_index,
-    validate_bam_file,
-    validate_barcode_file,
-)
+from core.config import PipelineConfig
+from core.exceptions import InvalidInputError, MgatkError
+from core.pipeline import run_pipeline
+from data.blacklists import load_bed_positions
+from utils.utils import has_alignment_index, validate_bam_file, validate_barcode_file
 
 logger = logging.getLogger(__name__)
 
@@ -31,26 +27,17 @@ def auto_detect_10x_structure(
     if path.is_dir():
         candidates = [path / "possorted_bam.bam", path / "outs" / "possorted_bam.bam"]
         bam_file = next((candidate for candidate in candidates if candidate.exists()), None)
-        if bam_file:
+        if bam_file is None:
+            bam_file = _find_10x_multi_bam(path)
+        if bam_file is None:
+            logger.warning(f"No possorted_bam.bam found in {path}")
+        else:
             bam_path = str(bam_file)
             if not barcode_file:
                 barcode_file = _find_barcode_file(bam_file.parent)
-        else:
-            multi_bam = _find_10x_multi_bam(path)
-            if multi_bam:
-                bam_path = str(multi_bam)
-                if not barcode_file:
-                    barcode_file = _find_barcode_file(multi_bam.parent)
-            else:
-                logger.warning(f"No possorted_bam.bam found in {path}")
 
-    elif path.is_file() and not barcode_file:
-        if path.parent.name == "outs":
-            logger.info("Detected 10x BAM in outs directory")
-            barcode_file = _find_barcode_file(path.parent)
-        elif path.parent.name == "count":
-            logger.info("Detected 10x Multi per-sample BAM")
-            barcode_file = _find_barcode_file(path.parent)
+    elif path.is_file() and not barcode_file and path.parent.name in ("outs", "count"):
+        barcode_file = _find_barcode_file(path.parent)
 
     return str(Path(bam_path).resolve()), barcode_file
 
@@ -73,32 +60,22 @@ def _find_10x_multi_bam(root: Path) -> Path | None:
 
 def _find_barcode_file(directory: Path) -> str | None:
     """Find barcode file in 10x directory."""
-    singlecell = directory / "singlecell.csv"
-    if singlecell.exists():
-        return str(singlecell)
-
-    for pattern in [
+    for name in [
+        "singlecell.csv",
         "sample_filtered_barcodes.csv",
         "filtered_peak_bc_matrix/barcodes.tsv",
         "filtered_tf_bc_matrix/barcodes.tsv.gz",
     ]:
-        bc_file = directory / pattern
-        if bc_file.exists():
-            return str(bc_file)
+        if (directory / name).exists():
+            return str(directory / name)
 
     logger.warning("No barcode file found")
     return None
 
 
 def load_panel_positions(panel_bed: str, mito_chr: str) -> frozenset[int]:
-    """1-based targeted positions from an amplicon panel BED.
-
-    Shares the blacklist BED reader, which already handles the 0-based
-    half-open to 1-based inclusive conversion and filters to one contig.
-    """
-    from data.blacklists import load_blacklist_positions
-
-    positions = load_blacklist_positions(build="none", custom_bed=panel_bed, mito_chr=mito_chr)
+    """1-based targeted positions from an amplicon panel BED."""
+    positions = load_bed_positions(panel_bed, mito_chr)
     if not positions:
         raise InvalidInputError(
             f"Panel BED {panel_bed} defines no positions on {mito_chr}; "
@@ -130,23 +107,13 @@ def check_alignment(path: str, mito_chr: str, reference_filename: str | None = N
         raise InvalidInputError(f"No index beside {path}; the run would have to build one")
 
 
-def normalise_mito_chr(mito_genome: str) -> str:
-    """Normalise mitochondrial chromosome name"""
-    if mito_genome.upper() in ["M", "MT"]:
-        return "chrM"
-    if mito_genome in ["chrM", "chrMT"]:
-        return mito_genome
-    logger.warning("Unusual mitochondrial chromosome name: %s", mito_genome)
-    return mito_genome
-
-
-def get_10x_parent_directory_name(bam_path: str) -> str:
-    """Extract the parent directory name when processing 10x data"""
-    bam_path_obj = Path(bam_path)
-
-    if bam_path_obj.parent.name == "outs":
-        return bam_path_obj.parent.parent.name
-    return bam_path_obj.parent.name if bam_path_obj.parent.name != "." else "mgatk2"
+def report_title(bam_path: str) -> str:
+    """Name a run after its 10x run or sample directory, else the BAM's directory."""
+    parent = Path(bam_path).resolve().parent
+    # <run>/outs/possorted_bam.bam, or 10x Multi <sample>/count/sample_alignments.bam
+    if parent.name in ("outs", "count"):
+        return parent.parent.name
+    return parent.name
 
 
 def setup_file_logging(log_file_path):
@@ -165,305 +132,111 @@ def setup_file_logging(log_file_path):
     root_logger.addHandler(file_handler)
 
 
+def determine_cores(ncores: int | None) -> int:
+    """--threads if given, else the SLURM allocation, else every CPU."""
+    if ncores:
+        return ncores
+    for variable in ("SLURM_CPUS_PER_TASK", "SLURM_NTASKS"):
+        value = os.environ.get(variable, "")
+        if value.isdigit():
+            return int(value)
+    return os.cpu_count() or 1
+
+
 def run_pipeline_command(
     bam_path,
     output_dir,
-    barcode_file,
-    barcode_tag,
-    min_barcode_reads,
-    mito_genome,
-    ncores,
-    verbose,
-    max_memory,
-    base_qual,
-    min_mapq,
-    min_reads,
-    max_strand_bias,
-    min_distance_from_end,
-    dedup_mode,
-    output_format,
+    mito_genome="chrM",
+    barcode_file=None,
+    barcode_tag="CB",
+    min_barcode_reads=10,
+    ncores=None,
+    verbose=False,
+    max_memory=128.0,
+    base_qual=20,
+    min_mapq=30,
+    min_reads=1,
+    max_strand_bias=1.0,
+    min_distance_from_end=5,
+    dedup_mode="alignment_and_fragment_length",
+    output_format="hdf5",
     dry_run=False,
     nh_max=0,
     nm_max=0,
     compute_tn5=True,
     assay=None,
     panel_bed=None,
-    original_bam_path=None,
-    report_title=None,
-    report_subtitle=None,
-    working_directory=None,
-):
-    """Common pipeline execution logic"""
-
+) -> int:
+    """Run one sample from command-line options and return its exit status."""
     if verbose:
-        for logger_name in ["mgatk", __name__]:
-            logging.getLogger(logger_name).setLevel(logging.DEBUG)
-
-    __version__ = version("mgatk2")
-    logger.info("mgatk2 version %s", __version__)
-
-    if barcode_file != "bulk":
-        bam_path, barcode_file = auto_detect_10x_structure(bam_path, barcode_file)
-
-    name = "output_"
-
-    skip_dedup = dedup_mode.lower() == "none"
-    use_fragment_length_dedup = dedup_mode.lower() in [
-        "alignment_and_fragment_length",
-        "fragment-length",
-        "hybrid",
-    ]
+        logging.getLogger().setLevel(logging.DEBUG)
+    logger.info("mgatk2 version %s", version("mgatk2"))
 
     try:
-        if not dry_run:
-            log_file = Path(output_dir) / "output.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            setup_file_logging(log_file)
+        if barcode_file != "bulk":
+            bam_path, barcode_file = auto_detect_10x_structure(bam_path, barcode_file)
+            if barcode_file:
+                validate_barcode_file(barcode_file)
 
-            cmd_args = sys.argv
-            cmd_path = os.path.realpath(cmd_args[0]) if cmd_args else "mgatk2"
-            full_command = f"{cmd_path} {' '.join(cmd_args[1:])}"
-            logger.info("Command executed: %s", full_command)
-            logger.info("Working directory: %s", os.getcwd())
-            logger.info("Execution time: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        if not dry_run:
-            validate_bam_file(bam_path)
-        if barcode_file and barcode_file != "bulk":
-            validate_barcode_file(barcode_file)
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        mito_chr = normalise_mito_chr(mito_genome)
-        if dry_run:
-            check_alignment(bam_path, mito_chr)
-
-        if barcode_file is None:
-            logger.info("No barcode file provided - will extract barcodes from BAM")
-        _log_configuration(
-            bam_path,
-            barcode_file,
-            output_dir,
-            mito_chr,
-            ncores,
-            barcode_tag,
-            min_barcode_reads,
-            base_qual,
-            min_mapq,
-            min_reads,
-            max_strand_bias,
-            min_distance_from_end,
-            dedup_mode,
-            output_format,
-            max_memory,
+        dedup_mode = dedup_mode.lower()
+        config = PipelineConfig(
+            min_baseq=base_qual,
+            min_mapq=min_mapq,
+            max_strand_bias=max_strand_bias,
+            min_distance_from_end=min_distance_from_end,
             nh_max=nh_max,
             nm_max=nm_max,
+            skip_deduplication=dedup_mode == "none",
+            use_fragment_length_dedup=dedup_mode == "alignment_and_fragment_length",
+            n_cores=determine_cores(ncores),
+            max_memory_gb=max_memory,
+            min_reads_per_cell=min_reads,
+            barcode_tag=barcode_tag,
+            mito_chr=mito_genome,
             compute_tn5=compute_tn5,
+            panel_positions=load_panel_positions(panel_bed, mito_genome) if panel_bed else None,
         )
 
         if dry_run:
+            check_alignment(bam_path, config.mito_chr)
+            _log_configuration(bam_path, barcode_file, output_dir, output_format, config)
             return 0
 
-        if report_title is None:
-            source_path = original_bam_path if original_bam_path else bam_path
-            report_title = get_10x_parent_directory_name(source_path)
-        if report_subtitle is None:
-            report_subtitle = "mgatk2 output analysis"
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        setup_file_logging(Path(output_dir) / "output.log")
+        logger.info("Command executed: %s", " ".join(sys.argv))
+        logger.info("Working directory: %s", os.getcwd())
+        validate_bam_file(bam_path)
+        _log_configuration(bam_path, barcode_file, output_dir, output_format, config)
 
-        actual_cores = determine_cores(ncores)
-
-        run_args = {
-            "bam_path": bam_path,
-            "barcode_file": barcode_file,
-            "output_dir": output_dir,
-            "sample_name": name,
-            "min_baseq": base_qual,
-            "min_mapq": min_mapq,
-            "min_reads_per_cell": min_reads,
-            "output_format": output_format.lower(),
-            "max_strand_bias": max_strand_bias,
-            "min_distance_from_end": min_distance_from_end,
-            "barcode_tag": barcode_tag,
-            "min_barcode_reads": min_barcode_reads,
-            "mito_chr": mito_chr,
-            "n_cores": actual_cores,
-            "skip_deduplication": skip_dedup,
-            "use_fragment_length_dedup": use_fragment_length_dedup,
-            "nh_max": nh_max,
-            "nm_max": nm_max,
-            "compute_tn5": compute_tn5,
-            "assay": assay,
-            "panel_positions": (
-                load_panel_positions(panel_bed, mito_chr) if panel_bed else None
-            ),
-            "report_title": report_title,
-            "report_subtitle": report_subtitle,
-            "working_directory": working_directory,
-        }
-
-        if max_memory is not None:
-            run_args["max_memory_gb"] = max_memory
-
-        from core.pipeline import run_pipeline
-
-        run_pipeline(**run_args)
-
+        run_pipeline(
+            bam_path,
+            output_dir,
+            config,
+            barcode_file=barcode_file,
+            min_barcode_reads=min_barcode_reads,
+            output_format=output_format.lower(),
+            assay=assay,
+            title=report_title(bam_path),
+        )
         return 0
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         return 130
-    except InvalidInputError as e:
-        logger.error("Input validation failed: %s", e)
+    except MgatkError as e:
+        logger.error("%s", e)
         return 1
-    except ProcessingError as e:
-        logger.error("Processing failed: %s", e)
-        return 1
-    except Exception as e:
-        logger.error("Unexpected error: %s", e)
-        if verbose:
-            import traceback
-
-            traceback.print_exc()
+    except Exception:
+        logger.exception("Unexpected error")
         return 1
 
 
-def determine_cores(ncores):
-    """Determine number of cores to use."""
-    import multiprocessing
-
-    if ncores is None:
-        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-        slurm_ntasks = os.environ.get("SLURM_NTASKS")
-
-        if slurm_cpus:
-            try:
-                actual_cores = int(slurm_cpus)
-            except ValueError:
-                actual_cores = max(1, multiprocessing.cpu_count())
-        elif slurm_ntasks:
-            try:
-                actual_cores = int(slurm_ntasks)
-            except ValueError:
-                actual_cores = max(1, multiprocessing.cpu_count())
-        else:
-            actual_cores = max(1, multiprocessing.cpu_count())
-    else:
-        actual_cores = ncores
-
-    return actual_cores
-
-
-def _log_configuration(
-    bam_path,
-    barcode_file,
-    output_dir,
-    mito_chr,
-    ncores,
-    barcode_tag,
-    min_barcode_reads,
-    base_qual,
-    min_mapq,
-    min_reads,
-    max_strand_bias,
-    min_distance_from_end,
-    dedup_mode,
-    output_format,
-    max_memory,
-    nh_max=0,
-    nm_max=0,
-    compute_tn5=True,
-):
-    """Log the pipeline configuration."""
-
-    logger.info("  Input BAM:              %s", os.path.realpath(bam_path))
-    logger.info(
-        "  Input barcodes:         %s",
-        (
-            "bulk (all reads)"
-            if barcode_file == "bulk"
-            else os.path.realpath(barcode_file)
-            if barcode_file
-            else "None (auto-detect from BAM)"
-        ),
-    )
-    logger.info("  Output directory:       %s", os.path.realpath(output_dir))
-    logger.info("  BAM prefix:             %s", mito_chr)
-
-    actual_cores = determine_cores(ncores)
-    if ncores is None:
-        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-        slurm_ntasks = os.environ.get("SLURM_NTASKS")
-
-        if slurm_cpus:
-            cores_msg = f"{actual_cores} (SLURM CPUS_PER_TASK)"
-        elif slurm_ntasks:
-            cores_msg = f"{actual_cores} (SLURM NTASKS)"
-        else:
-            cores_msg = f"{actual_cores} (all available)"
-    else:
-        cores_msg = str(actual_cores)
-    logger.info("  Cores:                  %s", cores_msg)
-
-    logger.info("  Barcode tag:            %s", barcode_tag)
-    if barcode_file is None:
-        logger.info("  Min barcode reads:      %s", min_barcode_reads)
-    logger.info("  Min base quality:       %s", base_qual)
-    logger.info("  Min mapping quality:    %s", min_mapq)
-    logger.info("  Min reads per cell:     %s", min_reads)
-
-    if dedup_mode.lower() == "none":
-        dedup_display = "disabled"
-    elif dedup_mode.lower() in ["alignment_and_fragment_length", "hybrid", "fragment"]:
-        dedup_display = "alignment + strand + fragment length"
-    else:
-        dedup_display = "alignment + strand only"
-
-    logger.info("  Max strand bias:        %s", max_strand_bias)
-    logger.info("  Min dist from end:      %sbp", min_distance_from_end)
-    logger.info("  NH max (multi-mapper):  %s", nh_max if nh_max > 0 else "disabled")
-    logger.info("  NM max (mismatches):    %s", nm_max if nm_max > 0 else "disabled")
-    logger.info("  Compute Tn5 cuts:       %s", compute_tn5)
-    logger.info("  Deduplication:          %s", dedup_display)
-
-    format_display = "text files (.txt.gz)" if output_format == "txt" else "HDF5 (.h5)"
-    logger.info("  Output format:          %s", format_display)
-    logger.info("  Using mitochondrial chromosome: %s", mito_chr)
-    if max_memory:
-        logger.info("  Max memory limit:       %sGB", max_memory)
-
-    if barcode_file == "bulk":
-        logger.info("  Barcodes:               bulk (all reads)")
-        return
-    if barcode_file and barcode_file.endswith(".csv"):
-        n_barcodes = 0
-        column_found = None
-
-        with open(barcode_file) as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames
-
-            if headers is None:
-                logger.warning("CSV file has no headers")
-                return
-
-            column_found = next((name for name in CELL_FLAG_COLUMNS if name in headers), None)
-            if column_found is None:
-                # 10x Multi sample_filtered_barcodes.csv: headerless, every row is a barcode
-                with open(barcode_file) as count_f:
-                    n_barcodes = sum(1 for line in count_f if line.strip())
-                logger.info("  Barcodes:               %s", n_barcodes)
-                return
-
-            for row in reader:
-                if column_found:
-                    is_cell = row.get(column_found, "0")
-                    if is_cell in TRUE_VALUES:
-                        n_barcodes += 1
-    elif barcode_file:
-        with open(barcode_file) as f:
-            n_barcodes = sum(1 for line in f if line.strip())
-    else:
-        logger.info("  Barcodes:               bulk (all reads)")
-        return
-    logger.info("  Barcodes:               %s", n_barcodes)
+def _log_configuration(bam_path, barcode_file, output_dir, output_format, config):
+    logger.info("  Input BAM:        %s", os.path.realpath(bam_path))
+    logger.info("  Barcodes:         %s", barcode_file or "auto-detect from BAM")
+    logger.info("  Output:           %s (%s)", os.path.realpath(output_dir), output_format)
+    for name, value in asdict(config).items():
+        if name == "panel_positions":
+            value = len(value) if value else "none"
+        logger.info("  %-17s %s", name + ":", value)

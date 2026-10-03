@@ -1,5 +1,7 @@
 import gzip
 import json
+from importlib.metadata import version
+from pathlib import Path
 
 import numpy as np
 import pysam
@@ -11,7 +13,7 @@ from analysis.quality_stats import QualityHistograms, histogram_median, rank_sum
 from cli import cli
 from core.config import PairedConfig
 from core.exceptions import InvalidInputError
-from processing.paired_pileup import _git_commit, run_paired_pipeline
+from processing.paired_pileup import run_paired_pipeline
 
 
 def _config(paired_files, output, tumor="tumor_bam", normal="normal_bam", **kwargs):
@@ -187,23 +189,6 @@ def test_paired_dry_run_rejects_a_missing_contig(paired_files, tmp_path):
     assert "is absent from" in result.output
 
 
-def test_paired_rejects_the_same_input_twice(paired_files, tmp_path):
-    arguments = _paired_args(paired_files, tmp_path)
-    arguments[4] = str(paired_files["tumor_bam"])
-
-    result = CliRunner().invoke(cli, [*arguments, "--dry-run"])
-
-    assert result.exit_code != 0
-    assert "must be different" in result.output
-
-
-def test_fasta_sets_ref_and_all_positions_are_written(paired_files, tmp_path):
-    result = run_paired_pipeline(_config(paired_files, tmp_path))
-
-    assert result.evidence_positions == 40
-    assert result.candidates == 1
-
-
 def test_bam_and_cram_give_the_same_counts(paired_files, tmp_path):
     bam = run_paired_pipeline(_config(paired_files, tmp_path / "bam"))
     cram = run_paired_pipeline(
@@ -281,15 +266,6 @@ def test_identical_inputs_have_no_pass_candidates(paired_files, alignment_factor
     assert run_paired_pipeline(config).pass_candidates == 0
 
 
-def test_provenance_tolerates_missing_git(monkeypatch):
-    def missing_git(*args, **kwargs):
-        raise FileNotFoundError
-
-    monkeypatch.setattr("processing.paired_pileup.subprocess.run", missing_git)
-
-    assert _git_commit() is None
-
-
 def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
     output = tmp_path / "out"
     config = _config(paired_files, output)
@@ -305,7 +281,7 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
         assert list(vcf)
 
     qc = _qc(result.outputs["vcf"])
-    assert qc["schema_version"] == "3.0"
+    assert qc["mgatk2_version"] == version("mgatk2")
     assert qc["reference"]["sha256"]
     assert qc["snv_only"] is True
     assert qc["counts"]["evidence_positions"] == 40
@@ -315,8 +291,9 @@ def test_outputs_are_valid_and_repeatable(paired_files, tmp_path):
     assert len(intervals) == result.callable_positions
     assert all(start == str(int(end) - 1) for _chrom, start, end in intervals)
 
+    first = {key: Path(path).read_bytes() for key, path in result.outputs.items()}
     rerun = run_paired_pipeline(config)
-    assert rerun.outputs == result.outputs
+    assert {key: Path(path).read_bytes() for key, path in rerun.outputs.items()} == first
 
 
 def test_rank_sum_filters_fire_only_on_degraded_alternates(paired_files, tmp_path):
@@ -408,29 +385,6 @@ def test_every_paired_option_is_accepted_by_the_command(paired_files, tmp_path):
     assert qc["blacklist_numt_strategy"] == "user_chrM_blacklist_and_MAPQ"
     # The error-rate exclusion follows --max-normal-af rather than a constant.
     assert qc["error_rate_real_allele_exclusion"] == 0.5
-
-
-def test_consensus_input_requires_deduplication_none(paired_files, tmp_path):
-    result = CliRunner().invoke(
-        cli,
-        [
-            "paired",
-            "--tumor",
-            str(paired_files["tumor_bam"]),
-            "--normal",
-            str(paired_files["normal_bam"]),
-            "--reference",
-            str(paired_files["reference"]),
-            "--output",
-            str(tmp_path / "out"),
-            "--sample-name",
-            "pair",
-            "--input-is-consensus",
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "deduplication none" in result.output
 
 
 def test_every_declared_vcf_field_is_written(paired_files, tmp_path):

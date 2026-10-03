@@ -468,9 +468,9 @@ Other current limitations:
 - The bundled NUMT BEDs are nuclear-side masking resources, not mitochondrial
   blacklists. Use `--custom-blacklist` for a chrM-side BED.
 
-### Migrating from paired schema 2.0
+### Migrating paired output from v1.3
 
-| 2.0 | 3.0 |
+| v1.3 | v1.4 |
 |---|---|
 | `--query` / `--baseline` | `--tumor` / `--normal` |
 | `--min-query-depth` / `--min-baseline-depth` | `--min-tumor-depth` / `--min-normal-depth` |

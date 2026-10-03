@@ -14,7 +14,7 @@ from core.exceptions import MgatkError
 from processing.paired_pileup import PairedResult, run_paired_pipeline
 
 from ..options import paired_options
-from ..utils import check_alignment, normalise_mito_chr
+from ..utils import check_alignment
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def paired(
             reference=reference,
             output=output_dir,
             sample_name=sample_name,
-            mito_chr=normalise_mito_chr(mito_genome),
+            mito_chr=mito_genome,
             min_baseq=base_qual,
             min_mapq=min_mapq,
             min_distance_from_end=min_distance_from_end,

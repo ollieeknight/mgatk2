@@ -10,13 +10,7 @@ import numpy as np
 import pysam
 
 from core.config import PipelineConfig, SimpleRead
-from core.exceptions import (
-    BAMFormatError,
-    BAMReadError,
-    InvalidInputError,
-    NoBarcodeTagsError,
-    NoChrMReadsError,
-)
+from core.exceptions import InvalidInputError, ProcessingError
 from processing.fragments import (
     deduplicate_fragments,
     group_reads_into_fragments,
@@ -32,17 +26,17 @@ class BAMReader:
         self,
         bam_path: str,
         config: PipelineConfig,
-        barcodes: set[str] | None = None,
+        check_barcode_tag: bool = False,
         reference_filename: str | None = None,
     ):
         self.bam_path = Path(bam_path)
         self.config = config
-        self.barcodes = barcodes or {"bulk"}
+        self.check_barcode_tag = check_barcode_tag
         self.reference_filename = reference_filename
         self._is_cram = self.bam_path.suffix.lower() == ".cram"
 
         if not self.bam_path.exists():
-            raise BAMReadError(str(bam_path), "File does not exist")
+            raise InvalidInputError(f"Alignment not found: {bam_path}")
 
         self._validate_bam_file()
 
@@ -59,7 +53,7 @@ class BAMReader:
         try:
             bam = self._open()
         except Exception as e:
-            raise BAMFormatError(str(self.bam_path), f"Cannot open: {e}") from e
+            raise InvalidInputError(f"Cannot open {self.bam_path}: {e}") from e
 
         available = list(bam.references)
         # Requested name wins; the aliases are only a fallback.
@@ -71,17 +65,21 @@ class BAMReader:
                 break
         else:
             bam.close()
-            raise NoChrMReadsError(str(self.bam_path), available)
+            raise InvalidInputError(
+                f"No mitochondrial contig in {self.bam_path}; header has: "
+                f"{', '.join(available[:10])}"
+            )
 
-        if self.barcodes != {"bulk"}:
-            reads_checked = 0
-            for i, read in enumerate(bam.fetch(self.config.mito_chr)):
-                reads_checked = i + 1
+        if self.check_barcode_tag:
+            for read in bam.fetch(self.config.mito_chr):
                 if read.has_tag(self.config.barcode_tag):
                     break
             else:
                 bam.close()
-                raise NoBarcodeTagsError(str(self.bam_path), self.config.barcode_tag, reads_checked)
+                raise InvalidInputError(
+                    f"No {self.config.mito_chr} read in {self.bam_path} carries barcode tag "
+                    f"'{self.config.barcode_tag}'; is this a single-cell BAM?"
+                )
 
         bam.close()
 
@@ -127,7 +125,7 @@ class BAMReader:
                     if read.is_duplicate:
                         stats["preexisting_duplicate_reads"] += 1
                         continue
-                    if read.mapping_quality < self.config.quality.min_mapq:
+                    if read.mapping_quality < self.config.min_mapq:
                         stats["low_mapq_reads"] += 1
                         continue
                     if read.query_sequence is None:
@@ -164,7 +162,7 @@ class BAMReader:
         except InvalidInputError:
             raise
         except Exception as e:
-            raise BAMReadError(str(self.bam_path), f"Read error: {e}") from e
+            raise ProcessingError(f"Cannot read {self.bam_path}: {e}") from e
 
         fragments, collisions = group_reads_into_fragments(reads)
         fragments, duplicate_stats = deduplicate_fragments(fragments, deduplication)
@@ -174,5 +172,5 @@ class BAMReader:
         stats["retained_fragments"] = len(fragments)
         stats["reference_length"] = reference_length
         if not fragments:
-            raise NoChrMReadsError(str(self.bam_path), [self.config.mito_chr])
+            raise InvalidInputError(f"No usable {self.config.mito_chr} reads in {self.bam_path}")
         return fragments, stats

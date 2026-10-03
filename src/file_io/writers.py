@@ -5,13 +5,11 @@ arriving as dense arrays. That keeps HDF5 writes chunk-aligned and keeps the
 per-position Python work proportional to covered positions only.
 """
 
-import errno
 import gzip
 import logging
 import os
 import shutil
 import tempfile
-import time
 from pathlib import Path
 
 import h5py
@@ -45,10 +43,6 @@ def _cell_stat_rows(result, barcodes) -> list[dict]:
 class IncrementalHDF5Writer:
     """Writes mgatk results to HDF5, one contiguous shard of columns at a time."""
 
-    # HDF5 can briefly return EAGAIN on networked filesystems.
-    MAX_RETRIES = 5
-    INITIAL_RETRY_DELAY = 0.1
-    MAX_RETRY_DELAY = 5.0
     # Column-chunk width; shard writes span whole chunks, so gzip runs once each.
     CHUNK_CELLS = 128
     CHUNK_CACHE_BYTES = 64 * 1024**2
@@ -75,7 +69,6 @@ class IncrementalHDF5Writer:
 
         self.cell_stats: list[dict] = []
         self.base_totals = np.zeros((self.n_positions, 4), dtype=np.int64)
-        self.write_error_count = 0
 
         logger.info("Staging HDF5 output in %s", self.staging_dir)
         self._init_hdf5_files()
@@ -133,59 +126,24 @@ class IncrementalHDF5Writer:
         lo = result.offset
         hi = lo + result.counts.shape[0]
 
-        def write():
-            for b_idx, base in enumerate(BASES):
-                for s_idx, strand in enumerate(STRANDS):
-                    self.counts_file[f"{base}_{strand}"][:, lo:hi] = np.ascontiguousarray(
-                        result.counts[:, :, b_idx, s_idx].T
-                    )
+        for b_idx, base in enumerate(BASES):
             for s_idx, strand in enumerate(STRANDS):
-                self.counts_file[f"tn5_cuts_{strand}"][:, lo:hi] = np.ascontiguousarray(
-                    result.tn5[:, :, s_idx].T
+                self.counts_file[f"{base}_{strand}"][:, lo:hi] = np.ascontiguousarray(
+                    result.counts[:, :, b_idx, s_idx].T
                 )
-            self.metadata_file["coverage"][:, lo:hi] = np.ascontiguousarray(result.depth.T)
-            self.metadata_file["mean_depth"][lo:hi] = result.mean_depth
-            self.metadata_file["median_depth"][lo:hi] = result.median_depth
-            self.metadata_file["max_depth"][lo:hi] = result.max_depth
-            self.metadata_file["genome_coverage"][lo:hi] = result.coverage_breadth
-            self.metadata_file["total_bases"][lo:hi] = result.total_bases
-
-        self._with_retry(write, "shard write")
-        self._with_retry(self._flush, "flush")
+        for s_idx, strand in enumerate(STRANDS):
+            self.counts_file[f"tn5_cuts_{strand}"][:, lo:hi] = np.ascontiguousarray(
+                result.tn5[:, :, s_idx].T
+            )
+        self.metadata_file["coverage"][:, lo:hi] = np.ascontiguousarray(result.depth.T)
+        self.metadata_file["mean_depth"][lo:hi] = result.mean_depth
+        self.metadata_file["median_depth"][lo:hi] = result.median_depth
+        self.metadata_file["max_depth"][lo:hi] = result.max_depth
+        self.metadata_file["genome_coverage"][lo:hi] = result.coverage_breadth
+        self.metadata_file["total_bases"][lo:hi] = result.total_bases
 
         self.base_totals += result.base_totals
         self.cell_stats.extend(_cell_stat_rows(result, barcodes))
-
-    def _flush(self):
-        self.counts_file.flush()
-        self.metadata_file.flush()
-
-    def _with_retry(self, action, what: str):
-        """Retry transient EAGAIN from networked filesystems, then give up."""
-        delay = self.INITIAL_RETRY_DELAY
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                action()
-                if attempt > 0:
-                    logger.info("%s succeeded on attempt %s", what, attempt + 1)
-                return
-            except OSError as e:
-                if e.errno != errno.EAGAIN:
-                    raise
-                self.write_error_count += 1
-                if attempt == self.MAX_RETRIES - 1:
-                    logger.error("%s failed after %s attempts", what, self.MAX_RETRIES)
-                    raise
-                logger.warning(
-                    "Temporary %s error (attempt %d/%d), retrying in %.2fs: %s",
-                    what,
-                    attempt + 1,
-                    self.MAX_RETRIES,
-                    delay,
-                    e,
-                )
-                time.sleep(delay)
-                delay = min(delay * 2, self.MAX_RETRY_DELAY)
 
     def finalize(self, qc_dir: Path):
         """Write reference alleles and metadata, close, then publish from staging."""
@@ -205,16 +163,9 @@ class IncrementalHDF5Writer:
         if self.barcode_metadata is not None:
             self._write_barcode_metadata()
 
-        self._with_retry(self._flush, "flush")
         self.counts_file.close()
         self.metadata_file.close()
         self._publish_hdf5_files()
-
-        if self.write_error_count > 0:
-            logger.warning(
-                "Encountered %d temporary write errors during processing (all recovered)",
-                self.write_error_count,
-            )
 
         qc_dir.mkdir(exist_ok=True, parents=True)
         if self.cell_stats:

@@ -3,7 +3,8 @@
 import logging
 import multiprocessing as mp
 import platform
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 from tqdm import tqdm
@@ -30,7 +31,7 @@ def process_shards(bam_path, config, barcodes, writer, reference_filename=None) 
     """Scan chrM once per shard, writing each finished shard straight to disk."""
     tasks = build_tasks(bam_path, config, barcodes, reference_filename)
     n_cells = len(barcodes)
-    workers = min(config.performance.n_cores, len(tasks))
+    workers = min(config.n_cores, len(tasks))
 
     logger.info(
         "Counting %s cells in %s shard(s) of up to %s cells on %s worker(s)",
@@ -54,13 +55,23 @@ def process_shards(bam_path, config, barcodes, writer, reference_filename=None) 
             for task in tasks:
                 absorb(scan_shard(task))
                 progress.update(len(task[2]))
-        else:
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=mp.get_context(MP_CONTEXT)
-            ) as pool:
-                futures = {pool.submit(scan_shard, task): task for task in tasks}
-                for future in as_completed(futures):
+            return totals
+
+        # Shards are absorbed in barcode order so every output is reproducible.
+        # Submitting at most `workers` ahead keeps finished shards waiting on a
+        # slow predecessor from piling up in memory.
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=mp.get_context(MP_CONTEXT)
+        ) as pool:
+            pending = deque()
+            for task in tasks:
+                pending.append((pool.submit(scan_shard, task), len(task[2])))
+                if len(pending) == workers:
+                    future, n = pending.popleft()
                     absorb(future.result())
-                    progress.update(len(futures[future][2]))
+                    progress.update(n)
+            for future, n in pending:
+                absorb(future.result())
+                progress.update(n)
 
     return totals

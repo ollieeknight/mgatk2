@@ -279,22 +279,6 @@ def create_reads_vs_depth_plot(mean_depth, total_bases):
     return _log_scatter(total_bases / 150.0, mean_depth, "Number of reads (log10)")
 
 
-def _resolve_title(sample_name, title, working_directory, input_dir):
-    """Name the report after the 10x run directory when one can be identified."""
-    for candidate in (input_dir, working_directory):
-        if title is not None or candidate is None:
-            break
-        path = Path(candidate)
-        if path.name == "outs":
-            title = path.parent.name
-        elif path.parent.name == "outs":
-            title = path.parent.parent.name
-        else:
-            title = path.name
-
-    return title or sample_name
-
-
 def _load_run_config(output_dir: Path) -> dict:
     """Read the run configuration the pipeline wrote beside the QC tables."""
     config_file = output_dir / "qc" / "run_config.json"
@@ -308,7 +292,7 @@ def _load_run_config(output_dir: Path) -> dict:
         return {}
 
 
-def _render_html(title, subtitle, working_directory, output_dir, run_config, data, sections):
+def _render_html(title, output_dir, run_config, data, sections):
     """Assemble the report page from already-rendered plot sections."""
     parameters = run_config.get("parameters", {})
     parameter_rows = "\n".join(
@@ -436,9 +420,9 @@ def _render_html(title, subtitle, working_directory, output_dir, run_config, dat
 <body>
     <div class="container">
         <h1>{title}</h1>
-        <div class="subtitle">{subtitle}</div>
+        <div class="subtitle">mgatk2 output analysis</div>
         <p><strong>Date:</strong> {datetime.now().strftime("%d/%m/%Y, %H:%M")}</p>
-        {f"<p><strong>Working directory:</strong> {working_directory}</p>" if working_directory else ""}
+        <p><strong>Working directory:</strong> {os.getcwd()}</p>
 
         <h2>Summary statistics</h2>
         <div class="summary-grid">
@@ -478,44 +462,6 @@ def _render_html(title, subtitle, working_directory, output_dir, run_config, dat
 """
 
 
-def _generate_report(
-    output_dir: Path,
-    sample_name: str,
-    title: str | None,
-    subtitle: str,
-    working_directory: str | None,
-    input_dir: str | None,
-    build_sections,
-):
-    """Load the HDF5 output once, render the plots, and write the page."""
-    output_dir = Path(output_dir)
-    counts_file = output_dir / "output" / "counts.h5"
-    metadata_file = output_dir / "output" / "metadata.h5"
-
-    if not counts_file.exists() or not metadata_file.exists():
-        logger.error("Output files not found in %s", output_dir)
-        return None
-
-    data = load_report_data(counts_file, metadata_file)
-    run_config = _load_run_config(output_dir)
-
-    html = _render_html(
-        _resolve_title(sample_name, title, working_directory, input_dir),
-        subtitle,
-        working_directory,
-        output_dir,
-        run_config,
-        data,
-        build_sections(data),
-    )
-
-    report_file = output_dir / "mgatk2_report.html"
-    with open(report_file, "w") as f:
-        f.write(html)
-
-    return report_file
-
-
 def _plot_section(heading, plot, caption=""):
     caption_html = (
         f'\n            <p style="color: #666; font-size: 0.9em; margin-top: 10px;">{caption}</p>'
@@ -543,19 +489,16 @@ def _plot_pair(first_heading, first_plot, second_heading, second_plot):
 """
 
 
-def generate_html_report(
-    output_dir: Path,
-    sample_name: str = "mgatk2",
-    title: str | None = None,
-    subtitle: str | None = None,
-    working_directory: str | None = None,
-    input_dir: str | None = None,
-):
-    """Write the scATAC QC report, which centres on Tn5 transposition."""
+def generate_html_report(output_dir: Path, title: str, tn5: bool = True) -> Path:
+    """Write the QC report: Tn5 transposition plots for ATAC, read starts otherwise."""
+    output_dir = Path(output_dir)
+    data = load_report_data(
+        output_dir / "output" / "counts.h5", output_dir / "output" / "metadata.h5"
+    )
 
-    def sections(data):
-        return [
-            _plot_section("chrM coverage", create_coverage_plot(data["coverage_mean"])),
+    sections = [_plot_section("chrM coverage", create_coverage_plot(data["coverage_mean"]))]
+    if tn5:
+        sections += [
             _plot_section(
                 "Tn5 transposition frequency",
                 create_transposition_frequency_plot(data["tn5_fwd"], data["tn5_rev"]),
@@ -574,31 +517,8 @@ def generate_html_report(
                 create_depth_vs_coverage_plot(data["mean_depth"], data["genome_coverage"]),
             ),
         ]
-
-    return _generate_report(
-        output_dir,
-        sample_name,
-        title,
-        subtitle or "mgatk2 output analysis",
-        working_directory,
-        input_dir,
-        sections,
-    )
-
-
-def generate_scrna_html_report(
-    output_dir: Path,
-    sample_name: str = "mgatk2",
-    title: str | None = None,
-    subtitle: str | None = None,
-    working_directory: str | None = None,
-    input_dir: str | None = None,
-):
-    """Write the scRNA QC report, where read starts replace the Tn5 plots."""
-
-    def sections(data):
-        return [
-            _plot_section("chrM coverage", create_coverage_plot(data["coverage_mean"])),
+    else:
+        sections += [
             _plot_section(
                 "Read start sites",
                 create_read_start_sites_plot(
@@ -613,12 +533,8 @@ def generate_scrna_html_report(
             ),
         ]
 
-    return _generate_report(
-        output_dir,
-        sample_name,
-        title,
-        subtitle or "mgatk2 scRNA-seq output analysis",
-        working_directory,
-        input_dir,
-        sections,
+    report_file = output_dir / "mgatk2_report.html"
+    report_file.write_text(
+        _render_html(title, output_dir, _load_run_config(output_dir), data, sections)
     )
+    return report_file
